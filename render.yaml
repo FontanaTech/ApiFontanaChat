@@ -1,0 +1,26 @@
+# Blueprint de Render. Plan gratuito para pruebas (se duerme tras 15 min sin tráfico).
+# Los secretos (DATABASE_URL) se escriben en el panel de Render; nunca en este archivo.
+services:
+  - type: web
+    name: fontanachat-api
+    runtime: node
+    plan: free
+    # --include=dev: el build necesita TypeScript y Vite (devDependencies) aunque NODE_ENV=production.
+    buildCommand: npm ci --include=dev && npm run build
+    # El plan gratuito no tiene "pre-deploy command": las migraciones (idempotentes) corren al arrancar.
+    startCommand: npm run migrate:prod && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TRUST_PROXY
+        value: 1
+      # Render no incluye Ollama: sin modelo el chat responde con el texto del sitio y pasa a WhatsApp.
+      - key: OLLAMA_MODEL
+        value: ""

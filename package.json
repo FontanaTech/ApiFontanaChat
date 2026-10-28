@@ -1,0 +1,55 @@
+{
+  "name": "fontanachat-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API central de chat y derivación a WhatsApp para sitios de casas de cobranza",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -n api,admin -c blue,green \"npm:dev:api\" \"npm:dev:admin\"",
+    "dev:api": "nodemon --legacy-watch --watch src --ext ts --exec \"tsx src/server.ts\"",
+    "dev:admin": "vite --config admin/vite.config.mts",
+    "build": "npm run build:api && npm run build:admin && npm run build:client",
+    "build:api": "tsc -p tsconfig.json",
+    "build:admin": "vite build --config admin/vite.config.mts",
+    "build:client": "tsc -p client/tsconfig.json",
+    "start": "node dist/server.js",
+    "migrate:prod": "node dist/scripts/migrate.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p admin/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
+    "db:migrate": "tsx src/scripts/migrate.ts",
+    "admin:create": "tsx src/scripts/createAdmin.ts",
+    "admin:password": "tsx src/scripts/setAdminPassword.ts",
+    "seed:aagora": "tsx src/scripts/seedAagora.ts"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.2.2",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "pg": "^8.23.1",
+    "undici": "^8.12.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.12",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/supertest": "^7.2.1",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "nodemon": "^3.1.14",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "supertest": "^7.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

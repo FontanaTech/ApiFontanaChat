@@ -1,0 +1,47 @@
+:root {
+  --bg: #f5f6f8; --card: #fff; --text: #1b2430; --muted: #64707d; --line: #e1e5ea; --primary: #0f766e; --danger: #b42318;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14181d; --card: #1d232a; --text: #e8ecf0; --muted: #98a4b0; --line: #2d3640; --primary: #2dd4bf; --danger: #f97066; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.5rem; margin: 8px 0 12px; } h2 { font-size: 1.1rem; margin: 0 0 8px; } h3 { font-size: 1rem; margin: 16px 0 4px; }
+.topbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.topbar nav { display: flex; gap: 8px; } .spacer { flex: 1; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0 0 16px; overflow-x: auto; }
+.card.inactive, tr.inactive { opacity: .6; }
+.login { max-width: 380px; margin: 12vh auto; display: grid; gap: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; } th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.field { display: grid; gap: 4px; } .field span { font-weight: 600; font-size: 13px; } .field small, .muted { color: var(--muted); }
+input, select, button { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+input[type=color] { padding: 2px; height: 34px; width: 56px; } input[type=checkbox] { margin-right: 6px; }
+button { cursor: pointer; margin-right: 6px; } button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+button.link { border: 0; background: none; color: var(--primary); padding: 4px 6px; }
+.inline { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-top: 8px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; }
+.tabs button.active { border-bottom-color: var(--primary); font-weight: 600; }
+.alert.error { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); border: 1px solid var(--danger); padding: 8px 12px; border-radius: 8px; margin: 8px 0; }
+.badge { padding: 2px 8px; border-radius: 99px; font-size: 12px; } .badge.ok { background: #d1fae5; color: #065f46; } .badge.off { background: #e5e7eb; color: #374151; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.chip { border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; display: inline-flex; align-items: center; }
+.chip button { border: 0; background: none; padding: 0 0 0 6px; margin: 0; }
+.checks { list-style: none; padding: 0; margin: 0; } .checks .done { color: var(--primary); } .checks .todo { color: var(--danger); }
+.preview { display: inline-block; padding: 6px 14px; border-radius: 8px; font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 12px 0; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; } .stat .num { font-size: 1.8rem; font-weight: 700; }
+.bar { display: inline-block; height: 8px; background: var(--primary); border-radius: 4px; vertical-align: middle; }
+code.json { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.center { text-align: center; margin-top: 20vh; }
+.pw { position: relative; display: flex; } .pw input { flex: 1; padding-right: 44px; }
+.pw .eye { position: absolute; right: 2px; top: 2px; bottom: 2px; margin: 0; border: 0; background: none; color: var(--muted); display: grid; place-items: center; width: 40px; padding: 0; }
+.pw .eye:hover { color: var(--text); }
+
+.alert.ok { background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); border: 1px solid var(--primary); padding: 8px 12px; border-radius: 8px; margin: 8px 0; font-weight: 600; }
+.checks .optional { color: var(--muted); }

@@ -1,0 +1,142 @@
+// DBML actualizado hasta la migracion 007 (sin areas: contacto directo al asesor). Mantener sincronizado con /migrations.
+// Visualizar en https://dbdiagram.io
+
+Table companies {
+  id uuid [pk]
+  slug text [unique, not null]
+  name text [not null]
+  active boolean [not null, default: true]
+  content_url text
+  content_json jsonb
+  content_hash text
+  content_synced_at timestamptz
+  content_status text [not null, default: 'never', note: 'never | ok | error']
+  content_error text
+  rr_cursor integer [not null, default: 0, note: 'turno del round robin entre asesores']
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table allowed_origins {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  origin text [not null]
+  active boolean [not null, default: true]
+  created_at timestamptz
+  indexes { (company_id, origin) [unique] }
+}
+
+Table admins {
+  id uuid [pk]
+  email text [unique, not null]
+  name text [not null]
+  password_hash text [not null, note: 'Argon2id']
+  role text [not null, note: 'superadmin | company_admin']
+  company_id uuid [ref: > companies.id, note: 'NULL solo para superadmin']
+  active boolean [not null, default: true]
+  last_login_at timestamptz
+  failed_logins integer [not null, default: 0]
+  locked_until timestamptz
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table admin_sessions {
+  id uuid [pk]
+  admin_id uuid [not null, ref: > admins.id]
+  token_hash text [unique, not null]
+  csrf_token text [not null]
+  ip text
+  user_agent text
+  created_at timestamptz
+  expires_at timestamptz [not null]
+  revoked_at timestamptz
+}
+
+Table advisors {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  name text [not null]
+  active boolean [not null, default: true]
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table phones {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  advisor_id uuid [not null, ref: > advisors.id]
+  number text [not null, note: 'solo digitos, formato internacional']
+  label text [not null]
+  is_primary boolean [not null, default: false]
+  active boolean [not null, default: true]
+  created_at timestamptz
+  updated_at timestamptz
+}
+
+Table buttons {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  key text [not null]
+  advisor_id uuid [ref: > advisors.id, note: 'NULL = cualquier asesor disponible (rotativo)']
+  label text [not null]
+  color text [not null]
+  text_color text [not null]
+  sort_order integer [not null, default: 0]
+  active boolean [not null, default: true]
+  created_at timestamptz
+  updated_at timestamptz
+  indexes { (company_id, key) [unique] }
+}
+
+Table public_sessions {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  token_hash text [unique, not null]
+  origin text [not null]
+  page_path text [not null]
+  created_at timestamptz
+  expires_at timestamptz [not null]
+}
+
+Table handoffs {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  session_id uuid [not null, ref: > public_sessions.id]
+  idempotency_key text [not null]
+  button_id uuid [ref: > buttons.id]
+  advisor_id uuid [not null, ref: > advisors.id]
+  phone_id uuid [not null, ref: > phones.id]
+  phone_number text [not null, note: 'instantanea del numero vigente al crear']
+  visitor_name text [not null]
+  reason text [not null]
+  wa_url text [not null]
+  status text [not null, note: 'created | whatsapp_clicked']
+  whatsapp_clicked_at timestamptz
+  created_at timestamptz
+  indexes { (company_id, session_id, idempotency_key) [unique] }
+}
+
+Table events {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  session_id uuid [not null, ref: > public_sessions.id]
+  type text [not null, note: 'page_view | chat_open | button_click | handoff_created | whatsapp_click']
+  button_id uuid [ref: > buttons.id]
+  handoff_id uuid [ref: > handoffs.id]
+  page_path text
+  created_at timestamptz
+}
+
+Table audit_log {
+  id uuid [pk]
+  admin_id uuid [ref: > admins.id]
+  company_id uuid [ref: > companies.id]
+  action text [not null]
+  entity text [not null]
+  entity_id text
+  before_data jsonb
+  after_data jsonb
+  ip text
+  created_at timestamptz
+}
