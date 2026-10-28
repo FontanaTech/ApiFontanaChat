@@ -163,6 +163,9 @@ con el texto de la página (atajo) y pasa a WhatsApp cuando no alcanza.
     agotan, el proveedor responde 429, la API lo pausa unos segundos y el chat usa el texto del sitio o pasa a WhatsApp. Antes de enviar al modelo se enmascaran los números
     largos que escriba el visitante (cédulas, cuentas) y los temas sensibles ya se desvían a un asesor sin consultar al modelo. Revisa las condiciones de datos de cada proveedor.
   - **Ollama** en un servidor tuyo: `OLLAMA_BASE_URL`/`OLLAMA_MODEL` (`127.0.0.1:11434` solo existe si corre en la misma máquina).
+  **Control de consumo.** Cada consulta al modelo suma sus tokens al día (UTC) de la empresa (`llm_usage`). `LLM_DAILY_TOKEN_LIMIT` pone un tope global y, en el panel
+  (empresa → General → *Uso del modelo de IA*), el superadmin fija un límite diario por empresa para repartir la cuota gratuita. Al llegar al límite el chat **no se detiene**: deja de usar el
+  modelo y responde con el texto del sitio o pasa a un asesor. Si el proveedor responde 429, la API se pausa (hasta 10 min) y reintenta sola.
   Sin ningún modelo, el chat responde con el texto de la página y, si no alcanza, pasa a WhatsApp.
 
 ## 8. Pruebas realizadas (`npm test`)

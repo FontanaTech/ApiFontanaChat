@@ -33,5 +33,8 @@ services:
         sync: false
       - key: LLM_TIMEOUT_MS
         value: 15000
+      # Tope diario de tokens (todas las empresas). El plan gratuito de Groq da 200000/día con este modelo.
+      - key: LLM_DAILY_TOKEN_LIMIT
+        value: 180000
       - key: CHAT_CONTEXT_MAX_CHARS
         value: 8000

@@ -39,7 +39,7 @@ export interface TestEnv {
   db: Db;
   app: ReturnType<typeof createApp>;
   cfg: Config;
-  llm: { impl: (m: LlmMessage[]) => Promise<string>; calls: LlmMessage[][] };
+  llm: { impl: (m: LlmMessage[]) => Promise<string>; calls: LlmMessage[][]; tokens: number };
   fetcher: { impl: ContentFetcher; calls: string[] };
 }
 
@@ -51,18 +51,21 @@ export async function createEnv(overrides: Partial<Config> = {}): Promise<TestEn
   );
   const llm: TestEnv['llm'] = {
     calls: [],
+    tokens: 1500,
     impl: async () => {
       throw new LlmUnavailableError('no configurado en prueba');
     },
   };
   const fetcher: TestEnv['fetcher'] = { calls: [], impl: async () => '{}' };
   const llmClient: LlmClient = {
-    chatJson: (m) => {
+    chatJson: async (m, meta) => {
       llm.calls.push(m);
-      return llm.impl(m);
+      const out = await llm.impl(m);
+      if (meta) meta.tokens = llm.tokens;
+      return out;
     },
   };
-  const deps: Omit<AppDeps, 'cache'> = {
+  const deps: Omit<AppDeps, 'cache' | 'budget'> = {
     cfg, db, llm: llmClient,
     contentFetcher: (url) => {
       fetcher.calls.push(url);

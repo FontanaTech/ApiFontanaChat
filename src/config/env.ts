@@ -19,6 +19,8 @@ const schema = z.object({
   LLM_API_KEY: z.string().optional().default(''),
   LLM_MODEL: z.string().optional().default(''),
   LLM_TIMEOUT_MS: int(15000),
+  // Tope diario de tokens del modelo sumando TODAS las empresas (0 = sin tope). Con el plan gratuito de Groq: 180000 (la cuota es 200000).
+  LLM_DAILY_TOKEN_LIMIT: z.coerce.number().int().min(0).default(0),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_MODEL: z.string().optional().default(''),
   OLLAMA_TIMEOUT_MS: int(20000),
@@ -56,6 +58,8 @@ export interface Config {
   llmApiKey: string;
   llmModel: string;
   llmTimeoutMs: number;
+  /** Tope diario global de tokens del modelo (suma de todas las empresas); 0 = sin tope. */
+  llmDailyTokenLimit: number;
   /** Hay un modelo realmente configurado (según el proveedor elegido). */
   llmEnabled: boolean;
   ollamaBaseUrl: string;
@@ -102,6 +106,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, overrides: P
     llmApiKey: e.LLM_API_KEY,
     llmModel: e.LLM_MODEL,
     llmTimeoutMs: e.LLM_TIMEOUT_MS,
+    llmDailyTokenLimit: e.LLM_DAILY_TOKEN_LIMIT,
     llmEnabled: e.LLM_PROVIDER === 'openai' ? !!(e.LLM_BASE_URL && e.LLM_API_KEY && e.LLM_MODEL) : !!e.OLLAMA_MODEL,
     ollamaBaseUrl: e.OLLAMA_BASE_URL,
     ollamaModel: e.OLLAMA_MODEL,

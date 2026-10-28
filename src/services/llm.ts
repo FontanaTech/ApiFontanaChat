@@ -4,7 +4,7 @@ import { LlmUnavailableError, createOllamaClient, type LlmClient } from './ollam
 type OpenAiConfig = Pick<Config, 'llmBaseUrl' | 'llmApiKey' | 'llmModel' | 'llmTimeoutMs'>;
 
 /** Tras un 429 no se vuelve a llamar al proveedor durante este tiempo (máximo), para no gastar más cuota ni esperar en vano. */
-const MAX_COOLDOWN_MS = 60_000;
+const MAX_COOLDOWN_MS = 600_000; // un límite diario puede tardar horas: se reintenta cada 10 min como máximo
 const DEFAULT_COOLDOWN_MS = 20_000;
 
 /**
@@ -16,7 +16,7 @@ const DEFAULT_COOLDOWN_MS = 20_000;
 export function createOpenAiCompatClient(cfg: OpenAiConfig): LlmClient {
   let blockedUntil = 0;
   return {
-    async chatJson(messages) {
+    async chatJson(messages, meta) {
       if (!cfg.llmBaseUrl || !cfg.llmApiKey || !cfg.llmModel) throw new LlmUnavailableError('LLM_BASE_URL, LLM_API_KEY o LLM_MODEL no configurados');
       if (Date.now() < blockedUntil) throw new LlmUnavailableError('Proveedor de IA en pausa por límite de uso');
       const ctrl = new AbortController();
@@ -40,7 +40,8 @@ export function createOpenAiCompatClient(cfg: OpenAiConfig): LlmClient {
           throw new LlmUnavailableError('Límite de uso del proveedor de IA (HTTP 429)');
         }
         if (!res.ok) throw new LlmUnavailableError(`El proveedor de IA respondió HTTP ${res.status}`);
-        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { total_tokens?: number } };
+        if (meta && typeof data.usage?.total_tokens === 'number') meta.tokens = data.usage.total_tokens;
         const content = data?.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new LlmUnavailableError('Respuesta vacía del proveedor de IA');
         return content;

@@ -8,7 +8,8 @@ import { normalize } from '../utils/text';
 import type { PublicSession } from '../models/public';
 import { HttpError } from '../utils/errors';
 import { createHandoff } from './handoff';
-import { LlmUnavailableError, type LlmClient, type LlmMessage } from './ollama';
+import type { LlmBudget } from './llmBudget';
+import { LlmUnavailableError, type LlmClient, type LlmMessage, type LlmMeta } from './ollama';
 
 export interface ChatReply {
   type: 'answer' | 'handoff_offer' | 'fallback';
@@ -239,6 +240,8 @@ export interface ChatDeps {
   contextMaxChars: number;
   /** Puntaje mínimo para responder al instante con el texto del sitio, sin modelo (0 lo desactiva). */
   fastScore: number;
+  /** Límite diario de tokens (por empresa y global); sin él no hay control de consumo. */
+  budget?: LlmBudget;
 }
 
 /** Respuestas ya generadas por pregunta, válidas mientras no cambie el contenido sincronizado (hash en la clave). */
@@ -313,11 +316,17 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   ];
 
   let raw: string;
+  const meta: LlmMeta = {};
   try {
-    raw = await deps.llm.chatJson(msgs);
+    // Con el presupuesto diario agotado el chat sigue: no usa el modelo (texto del sitio o asesor).
+    const verdict = deps.budget ? await deps.budget.check(company) : 'ok';
+    if (verdict !== 'ok') throw new LlmUnavailableError(`Presupuesto diario de IA agotado (${verdict === 'company' ? 'empresa' : 'global'})`);
+    raw = await deps.llm.chatJson(msgs, meta);
+    const chars = msgs.reduce((n, m) => n + m.content.length, 0) + raw.length;
+    void deps.budget?.record(company.id, meta.tokens ?? Math.ceil(chars / 3.2));
   } catch (e) {
     if (!(e instanceof LlmUnavailableError)) console.error('[chat] error inesperado del LLM:', e);
-    else if (!e.message.includes('no configurado')) console.warn(`[chat] modelo no disponible: ${e.message}`);
+    else if (!/no configurado|Presupuesto/.test(e.message)) console.warn(`[chat] modelo no disponible: ${e.message}`);
     // Sin modelo (no configurado o caído): se responde con lo que el sitio dice de la pregunta; si no hay, un asesor.
     const found = extractiveAnswer(knowledge, message, 2);
     if (found) return { type: 'answer', message: found.text, link: link(found.section) };

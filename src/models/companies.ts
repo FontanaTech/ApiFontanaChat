@@ -10,12 +10,14 @@ export interface Company {
   content_synced_at: string | null;
   content_status: 'never' | 'ok' | 'error';
   content_error: string | null;
+  /** Límite diario de tokens del modelo para esta empresa; null = sin límite propio. */
+  llm_daily_tokens: number | null;
   created_at: string;
   updated_at: string;
 }
 
 const COLS =
-  'id, slug, name, active, content_url, content_hash, content_synced_at, content_status, content_error, created_at, updated_at';
+  'id, slug, name, active, content_url, content_hash, content_synced_at, content_status, content_error, llm_daily_tokens, created_at, updated_at';
 
 export async function listCompanies(q: Queryable, onlyId?: string): Promise<Company[]> {
   const r = onlyId
@@ -53,7 +55,7 @@ export async function createCompany(
 export async function updateCompany(
   q: Queryable,
   id: string,
-  d: { name?: string; slug?: string; active?: boolean; contentUrl?: string | null },
+  d: { name?: string; slug?: string; active?: boolean; contentUrl?: string | null; llmDailyTokens?: number | null },
 ): Promise<Company | null> {
   const r = await q.query<Company>(
     `UPDATE companies SET
@@ -61,9 +63,10 @@ export async function updateCompany(
        slug = COALESCE($3, slug),
        active = COALESCE($4, active),
        content_url = CASE WHEN $5::boolean THEN $6 ELSE content_url END,
+       llm_daily_tokens = CASE WHEN $7::boolean THEN $8::integer ELSE llm_daily_tokens END,
        updated_at = now()
      WHERE id = $1 RETURNING ${COLS}`,
-    [id, d.name ?? null, d.slug ?? null, d.active ?? null, d.contentUrl !== undefined, d.contentUrl ?? null],
+    [id, d.name ?? null, d.slug ?? null, d.active ?? null, d.contentUrl !== undefined, d.contentUrl ?? null, d.llmDailyTokens !== undefined, d.llmDailyTokens ?? null],
   );
   return r.rows[0] ?? null;
 }

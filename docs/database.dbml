@@ -1,4 +1,4 @@
-// DBML actualizado hasta la migracion 007 (sin areas: contacto directo al asesor). Mantener sincronizado con /migrations.
+// DBML actualizado hasta la migracion 008 (sin areas: contacto directo al asesor). Mantener sincronizado con /migrations.
 // Visualizar en https://dbdiagram.io
 
 Table companies {
@@ -13,6 +13,7 @@ Table companies {
   content_status text [not null, default: 'never', note: 'never | ok | error']
   content_error text
   rr_cursor integer [not null, default: 0, note: 'turno del round robin entre asesores']
+  llm_daily_tokens integer [note: 'limite diario de tokens del modelo para esta empresa; NULL = sin limite propio']
   created_at timestamptz
   updated_at timestamptz
 }
@@ -126,6 +127,14 @@ Table events {
   handoff_id uuid [ref: > handoffs.id]
   page_path text
   created_at timestamptz
+}
+
+Table llm_usage {
+  company_id uuid [not null, ref: > companies.id]
+  day date [not null, note: 'dia UTC']
+  requests integer [not null, default: 0]
+  tokens integer [not null, default: 0]
+  indexes { (company_id, day) [pk] }
 }
 
 Table audit_log {

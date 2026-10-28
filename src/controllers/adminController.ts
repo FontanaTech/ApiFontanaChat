@@ -7,6 +7,7 @@ import * as audit from '../models/audit';
 import * as catalog from '../models/catalog';
 import * as companies from '../models/companies';
 import * as origins from '../models/origins';
+import * as usage from '../models/usage';
 import * as pub from '../models/public';
 import { badRequest, forbidden, notFound } from '../utils/errors';
 import * as v from '../validation/schemas';
@@ -108,8 +109,8 @@ export function adminController(deps: AppDeps) {
     },
     async updateCompany(req: Request, res: Response) {
       const b = parse(v.updateCompanyBody, req.body);
-      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined)) {
-        throw forbidden('Solo un superadmin puede cambiar el slug o el estado de la empresa');
+      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined || b.llmDailyTokens !== undefined)) {
+        throw forbidden('Solo un superadmin puede cambiar el slug, el estado o el límite de IA de la empresa');
       }
       const c = await audited(req, { companyId: cid(req), entity: 'company', action: b.active === false ? 'deactivate' : 'update' }, async (q) => ({
         before: must(await companies.getCompany(q, cid(req))),
@@ -130,6 +131,23 @@ export function adminController(deps: AppDeps) {
         before: { hash: company.content_hash }, after: { ok: out.ok, error: out.error, hash: out.company.content_hash }, ip: req.ip,
       });
       res.status(out.ok ? 200 : 422).json({ ok: out.ok, error: out.error, company: out.company });
+    },
+    /** Consumo del modelo de IA: hoy, últimos 14 días y límites (empresa y global). */
+    async llmUsage(req: Request, res: Response) {
+      const company = must(await companies.getCompany(db, cid(req)));
+      const day = deps.budget.today();
+      const [days, allToday] = await Promise.all([usage.usageHistory(db, company.id, 14), usage.usageForDay(db, day)]);
+      const t = days.find((d) => d.day === day);
+      res.json({
+        enabled: deps.cfg.llmEnabled,
+        provider: deps.cfg.llmProvider,
+        model: deps.cfg.llmProvider === 'openai' ? deps.cfg.llmModel : deps.cfg.ollamaModel,
+        today: { requests: t?.requests ?? 0, tokens: t?.tokens ?? 0 },
+        dailyLimit: company.llm_daily_tokens,
+        globalLimit: deps.cfg.llmDailyTokenLimit > 0 ? deps.cfg.llmDailyTokenLimit : null,
+        globalToday: allToday.reduce((n, r) => n + r.tokens, 0),
+        days,
+      });
     },
     async contentSummary(req: Request, res: Response) {
       const json = (await getCompanyContent(db, cid(req))) as v.ChatbotContent | null;

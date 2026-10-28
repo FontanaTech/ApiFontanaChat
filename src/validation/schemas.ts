@@ -36,6 +36,8 @@ export const updateCompanyBody = z
     name: trimmed(1, 120).optional(),
     active: z.boolean().optional(),
     contentUrl: z.string().trim().url().max(500).nullable().optional(),
+    // Solo superadmin: reparte la cuota diaria de tokens del modelo entre las empresas (null = sin límite propio).
+    llmDailyTokens: z.number().int().min(0).max(1_000_000_000).nullable().optional(),
   })
   .strict();
 

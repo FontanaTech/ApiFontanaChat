@@ -5,12 +5,13 @@ import helmet from 'helmet';
 import type { AppDeps } from './app-types';
 import { errorHandler, limiter, notFoundHandler } from './middleware/security';
 import { adminRouter, publicRouter } from './routes';
+import { createLlmBudget } from './services/llmBudget';
 import { createPublicCache } from './services/publicCache';
 
 export const ADMIN_DIST = path.resolve(__dirname, '..', 'admin', 'dist');
 
-export function createApp(input: Omit<AppDeps, 'cache'>) {
-  const deps: AppDeps = { ...input, cache: createPublicCache(input.cfg) };
+export function createApp(input: Omit<AppDeps, 'cache' | 'budget'>) {
+  const deps: AppDeps = { ...input, cache: createPublicCache(input.cfg), budget: createLlmBudget(input.db, input.cfg) };
   const { cfg, db } = deps;
   const app = express();
   app.disable('x-powered-by');

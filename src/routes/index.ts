@@ -48,6 +48,7 @@ export function adminRouter(deps: AppDeps) {
   co.post('/content/sync', h(a.syncContent));
   co.get('/content', h(a.contentSummary));
   co.get('/setup', h(a.setup));
+  co.get('/llm-usage', h(a.llmUsage));
 
   co.get('/origins', h(a.listOrigins));
   co.post('/origins', h(a.createOrigin));

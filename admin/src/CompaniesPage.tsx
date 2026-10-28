@@ -9,6 +9,8 @@ interface Company {
   active: boolean;
   content_status: string;
   content_synced_at: string | null;
+  /** Límite diario de tokens del modelo de IA para esta empresa (null = sin límite propio). */
+  llm_daily_tokens?: number | null;
 }
 
 export function CompaniesPage({ onOpen }: { onOpen: (id: string) => void }) {

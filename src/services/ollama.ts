@@ -7,14 +7,18 @@ export interface LlmMessage {
 
 /** Cliente LLM. Solo el backend lo usa; el navegador nunca ve Ollama. */
 export interface LlmClient {
-  chatJson(messages: LlmMessage[]): Promise<string>;
+  /** `meta.tokens` se completa con los tokens gastados (entrada + salida) cuando el proveedor los informa. */
+  chatJson(messages: LlmMessage[], meta?: LlmMeta): Promise<string>;
+}
+export interface LlmMeta {
+  tokens?: number;
 }
 
 export class LlmUnavailableError extends Error {}
 
 export function createOllamaClient(cfg: Pick<Config, 'ollamaBaseUrl' | 'ollamaModel' | 'ollamaTimeoutMs'> & Partial<Pick<Config, 'ollamaKeepAlive' | 'ollamaNumCtx'>>): LlmClient {
   return {
-    async chatJson(messages) {
+    async chatJson(messages, meta) {
       if (!cfg.ollamaModel) throw new LlmUnavailableError('OLLAMA_MODEL no configurado');
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), cfg.ollamaTimeoutMs);
@@ -34,7 +38,8 @@ export function createOllamaClient(cfg: Pick<Config, 'ollamaBaseUrl' | 'ollamaMo
           }),
         });
         if (!res.ok) throw new LlmUnavailableError(`Ollama respondió HTTP ${res.status}`);
-        const data = (await res.json()) as { message?: { content?: string } };
+        const data = (await res.json()) as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
+        if (meta) meta.tokens = (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0);
         const content = data?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new LlmUnavailableError('Respuesta vacía de Ollama');
         return content;

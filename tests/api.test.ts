@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   adminApi, createEnv, fakePhone, login, makeAdmin, publicClient, setupCompany, type Fixture, type TestEnv,
 } from './helpers';
@@ -599,6 +599,58 @@ describe('chatbot', () => {
     const ok = loadConfig({ ...base, LLM_PROVIDER: 'openai', LLM_BASE_URL: 'https://x.test/v1', LLM_API_KEY: 'k', LLM_MODEL: 'm' });
     expect(ok.llmEnabled).toBe(true);
     expect(createLlmClient(ok)).toHaveProperty('chatJson');
+  });
+
+  it('control de consumo: guarda los tokens, y al agotar el límite de la empresa el chat sigue sin usar el modelo', async () => {
+    env.llm.tokens = 1500;
+    const used = async () =>
+      Number((await env.db.query<{ t: number }>('SELECT COALESCE(sum(tokens), 0)::int AS t FROM llm_usage WHERE company_id = $1', [F.companyId])).rows[0].t);
+    // se registra el consumo de cada consulta al modelo
+    say('Ofrecemos gestión de cartera y atención telefónica.');
+    const before = await used();
+    await c.post('/chat', { message: '¿Qué hacen exactamente en su trabajo diario?' });
+    await vi.waitFor(async () => expect(await used()).toBe(before + 1500));
+    // límite de la empresa: 1000 tokens más de lo ya usado → la próxima consulta lo sobrepasa
+    expect((await sup.patch(`/companies/${F.companyId}`, { llmDailyTokens: before + 2000 })).status).toBe(200);
+    await c.post('/chat', { message: '¿Cómo es la atención al cliente en general?' });
+    await vi.waitFor(async () => expect(await used()).toBe(before + 3000));
+    const calls = env.llm.calls.length;
+    const blocked = await c.post('/chat', { message: '¿Qué pueden contarme de su equipo de trabajo?' });
+    expect(blocked.status).toBe(200);
+    expect(['answer', 'handoff_offer', 'fallback']).toContain(blocked.body.type);
+    expect(env.llm.calls.length).toBe(calls); // el modelo no se usó
+    // quitar el límite lo reactiva
+    expect((await sup.patch(`/companies/${F.companyId}`, { llmDailyTokens: null })).status).toBe(200);
+    await c.post('/chat', { message: '¿Qué pueden contarme de su equipo de trabajo?' });
+    expect(env.llm.calls.length).toBe(calls + 1);
+  });
+
+  it('tope global diario: al alcanzarlo ninguna empresa usa el modelo', async () => {
+    env.cfg.llmDailyTokenLimit = 1; // ya hay consumo registrado hoy
+    try {
+      const calls = env.llm.calls.length;
+      const r = await c.post('/chat', { message: '¿Cuál es su cobertura geográfica de atención?' });
+      expect(r.status).toBe(200);
+      expect(env.llm.calls.length).toBe(calls);
+    } finally {
+      env.cfg.llmDailyTokenLimit = 0;
+    }
+  });
+
+  it('el panel muestra el consumo y solo el superadmin cambia el límite', async () => {
+    await makeAdmin(env, { email: 'usage-c@test.local', role: 'company_admin', companyId: F.companyId });
+    const adm = adminApi(env, await login(env, 'usage-c@test.local'));
+    const u = (await adm.get(`/companies/${F.companyId}/llm-usage`)).body;
+    expect(u).toMatchObject({ enabled: false, provider: 'ollama', dailyLimit: null, globalLimit: null });
+    expect(u.today.tokens).toBeGreaterThan(0);
+    expect(u.days[0]).toMatchObject({ requests: expect.any(Number), tokens: u.today.tokens });
+    expect(u.globalToday).toBeGreaterThanOrEqual(u.today.tokens);
+    expect((await adm.patch(`/companies/${F.companyId}`, { llmDailyTokens: 5 })).status).toBe(403);
+    expect((await sup.patch(`/companies/${F.companyId}`, { llmDailyTokens: 5000 })).body.llm_daily_tokens).toBe(5000);
+    expect((await adm.get(`/companies/${F.companyId}/llm-usage`)).body.dailyLimit).toBe(5000);
+    await sup.patch(`/companies/${F.companyId}`, { llmDailyTokens: null });
+    // otra empresa no ve el consumo de esta
+    expect((await adm.get(`/companies/${A.companyId}/llm-usage`)).status).toBe(404);
   });
 
   it('el visitante no puede inyectar una URL de contenido', async () => {

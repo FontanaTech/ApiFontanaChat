@@ -68,7 +68,7 @@ export function publicController(deps: AppDeps) {
 
     async chat(req: Request, res: Response) {
       const body = parse(chatBody, req.body);
-      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore }, req.pub!.company, req.pub!.session!, body.message, body.history);
+      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget }, req.pub!.company, req.pub!.session!, body.message, body.history);
       res.json(reply);
     },
 
