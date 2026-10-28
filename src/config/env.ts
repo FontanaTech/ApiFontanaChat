@@ -13,6 +13,12 @@ const schema = z.object({
   PORT: int(10000),
   DATABASE_URL: z.string().optional().default(''),
   SESSION_SECRET: z.string().optional().default(''),
+  // Proveedor del modelo: 'ollama' (local/servidor propio) u 'openai' (cualquier API compatible: Groq, Gemini, OpenRouter...).
+  LLM_PROVIDER: z.enum(['ollama', 'openai']).default('ollama'),
+  LLM_BASE_URL: z.string().optional().default(''),
+  LLM_API_KEY: z.string().optional().default(''),
+  LLM_MODEL: z.string().optional().default(''),
+  LLM_TIMEOUT_MS: int(15000),
   OLLAMA_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   OLLAMA_MODEL: z.string().optional().default(''),
   OLLAMA_TIMEOUT_MS: int(20000),
@@ -44,6 +50,14 @@ export interface Config {
   port: number;
   databaseUrl: string;
   sessionSecret: string;
+  llmProvider: 'ollama' | 'openai';
+  llmBaseUrl: string;
+  /** Clave del proveedor: solo vive en el servidor, nunca se envía al navegador ni se registra. */
+  llmApiKey: string;
+  llmModel: string;
+  llmTimeoutMs: number;
+  /** Hay un modelo realmente configurado (según el proveedor elegido). */
+  llmEnabled: boolean;
   ollamaBaseUrl: string;
   ollamaModel: string;
   ollamaTimeoutMs: number;
@@ -83,6 +97,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, overrides: P
     port: e.PORT,
     databaseUrl: e.DATABASE_URL,
     sessionSecret: e.SESSION_SECRET || 'dev-only-insecure-secret-change-me-0000',
+    llmProvider: e.LLM_PROVIDER,
+    llmBaseUrl: e.LLM_BASE_URL,
+    llmApiKey: e.LLM_API_KEY,
+    llmModel: e.LLM_MODEL,
+    llmTimeoutMs: e.LLM_TIMEOUT_MS,
+    llmEnabled: e.LLM_PROVIDER === 'openai' ? !!(e.LLM_BASE_URL && e.LLM_API_KEY && e.LLM_MODEL) : !!e.OLLAMA_MODEL,
     ollamaBaseUrl: e.OLLAMA_BASE_URL,
     ollamaModel: e.OLLAMA_MODEL,
     ollamaTimeoutMs: e.OLLAMA_TIMEOUT_MS,

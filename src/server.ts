@@ -4,7 +4,7 @@ import { createPgDb } from './db';
 import { createContentFetcher } from './services/contentSync';
 import { listCompanies } from './models/companies';
 import { warmUpChat } from './services/chat';
-import { createOllamaClient } from './services/ollama';
+import { createLlmClient } from './services/llm';
 
 let cfg: ReturnType<typeof loadConfig>;
 let db: ReturnType<typeof createPgDb>;
@@ -15,7 +15,7 @@ try {
   console.error(`No se pudo iniciar: ${e.message}`);
   process.exit(1);
 }
-const llm = createOllamaClient(cfg);
+const llm = createLlmClient(cfg);
 const app = createApp({
   cfg,
   db,
@@ -25,7 +25,8 @@ const app = createApp({
 
 const server = app.listen(cfg.port, cfg.host, () => {
   console.log(`API escuchando en http://${cfg.host}:${cfg.port} (${cfg.env})`);
-  if (cfg.ollamaModel) void warmUp();
+  // Solo Ollama necesita precalentarse (carga el modelo en memoria); un proveedor alojado responde de inmediato.
+  if (cfg.llmProvider === 'ollama' && cfg.llmEnabled) void warmUp();
 });
 
 /** Carga el modelo en memoria con el contenido de cada empresa, para que la primera pregunta real no espere ~20 s. */

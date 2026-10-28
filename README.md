@@ -156,8 +156,14 @@ con el texto de la página (atajo) y pasa a WhatsApp cuando no alcanza.
 - **Rendimiento:** empresa, orígenes y sesión pública se cachean `PUBLIC_CACHE_TTL_SECONDS` (15 s; los cambios hechos en el panel la invalidan al instante), el sitio procesado se guarda
   en memoria por hash de contenido y Ollama conserva el modelo cargado (`OLLAMA_KEEP_ALIVE`) con ventana fija (`OLLAMA_NUM_CTX`). Los teléfonos nunca se cachean. El chat responde **al instante, sin modelo**, cuando una sección del sitio cubre las palabras de la pregunta (`CHAT_FAST_SCORE`, 0 lo desactiva), guarda en caché las preguntas repetidas y precalienta el modelo al arrancar y al sincronizar. En CPU sin GPU, `qwen2.5:3b` tarda ~5–15 s por pregunta nueva y `qwen2.5:1.5b` ~3–6 s (menos preciso); con GPU o un servidor de modelos tarda 1–2 s. Neon suspende la base
   tras unos minutos sin uso: la primera petición después puede tardar 1–2 s.
-- **Ollama:** `127.0.0.1:11434` solo existe si Ollama corre en la misma máquina. Render no lo incluye: necesitas un host accesible
-  para el backend (ajusta `OLLAMA_BASE_URL`). Si no está disponible, el chat responde con el texto de la página y, si no alcanza, pasa a WhatsApp.
+- **Modelo de IA (opcional).** Render no incluye Ollama. Hay dos caminos:
+  - **Proveedor alojado compatible con OpenAI** (recomendado para empezar, con plan gratuito): `LLM_PROVIDER=openai`, `LLM_BASE_URL`, `LLM_MODEL` y `LLM_API_KEY`.
+    Con Groq: `https://api.groq.com/openai/v1` y `llama-3.1-8b-instant` (el `render.yaml` ya los trae; solo falta pegar `LLM_API_KEY` en Render → Environment).
+    Funciona igual con Gemini (`https://generativelanguage.googleapis.com/v1beta/openai/`) u OpenRouter. Los planes gratuitos tienen límites por minuto y por día: si se
+    agotan, el proveedor responde 429, la API lo pausa unos segundos y el chat usa el texto del sitio o pasa a WhatsApp. Antes de enviar al modelo se enmascaran los números
+    largos que escriba el visitante (cédulas, cuentas) y los temas sensibles ya se desvían a un asesor sin consultar al modelo. Revisa las condiciones de datos de cada proveedor.
+  - **Ollama** en un servidor tuyo: `OLLAMA_BASE_URL`/`OLLAMA_MODEL` (`127.0.0.1:11434` solo existe si corre en la misma máquina).
+  Sin ningún modelo, el chat responde con el texto de la página y, si no alcanza, pasa a WhatsApp.
 
 ## 8. Pruebas realizadas (`npm test`)
 

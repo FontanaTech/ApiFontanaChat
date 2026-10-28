@@ -228,6 +228,9 @@ function parseLlm(raw: string) {
 
 /* ---------- respuesta ---------- */
 
+/** Cédulas, cuentas o teléfonos que el visitante escriba no salen del servidor hacia el modelo. */
+export const maskNumbers = (s: string): string => s.replace(/\d[\d\s().-]{4,}\d/g, '[número]');
+
 export interface ChatDeps {
   db: Db;
   llm: LlmClient;
@@ -304,8 +307,8 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
 
   const msgs: LlmMessage[] = [
     { role: 'system', content: systemPrompt(company, knowledgeText(knowledge, message, deps.contextMaxChars)) },
-    ...history.slice(-4).map((h) => ({ role: h.role, content: h.content.slice(0, 500) })),
-    { role: 'user', content: message },
+    ...history.slice(-4).map((h) => ({ role: h.role, content: maskNumbers(h.content.slice(0, 500)) })),
+    { role: 'user', content: maskNumbers(message) },
   ];
 
   let raw: string;

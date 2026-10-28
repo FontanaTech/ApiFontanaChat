@@ -121,7 +121,7 @@ export function adminController(deps: AppDeps) {
       const company = must(await companies.getCompany(db, cid(req)));
       const out = await syncCompanyContent(db, deps.cfg, deps.contentFetcher, company);
       deps.cache.clear();
-      if (out.ok && deps.cfg.ollamaModel) {
+      if (out.ok && deps.cfg.llmProvider === 'ollama' && deps.cfg.llmEnabled) {
         const chatDeps = { db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore };
         void warmUpChat(chatDeps, out.company); // en segundo plano: no retrasa la respuesta del panel
       }
@@ -231,8 +231,8 @@ export function adminController(deps: AppDeps) {
           key: 'content', label: 'Contenido del sitio sincronizado', required: true, done: company.content_status === 'ok', hint: contentHint,
         },
         {
-          key: 'ai', label: 'Modelo de IA configurado (Ollama)', required: false, done: deps.cfg.ollamaModel !== '',
-          hint: 'Define OLLAMA_MODEL en el .env de la API. Sin modelo, el chat deriva a un asesor en lugar de responder dudas.',
+          key: 'ai', label: 'Modelo de IA configurado', required: false, done: deps.cfg.llmEnabled,
+          hint: 'Configura LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY y LLM_MODEL (p. ej. Groq) o OLLAMA_MODEL en las variables de la API. Sin modelo, el chat responde con el texto del sitio y pasa a un asesor cuando no alcanza.',
         },
         {
           key: 'buttons', label: 'Botón de contacto', required: false, done: buttons.length > 0,

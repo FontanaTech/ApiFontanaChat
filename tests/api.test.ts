@@ -4,7 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   adminApi, createEnv, fakePhone, login, makeAdmin, publicClient, setupCompany, type Fixture, type TestEnv,
 } from './helpers';
+import { loadConfig } from '../src/config/env';
 import { LlmUnavailableError, createOllamaClient } from '../src/services/ollama';
+import { createLlmClient, createOpenAiCompatClient } from '../src/services/llm';
 
 const ORIGIN_A = 'https://site-a.test';
 const ORIGIN_B = 'https://site-b.test';
@@ -529,6 +531,67 @@ describe('chatbot', () => {
     } finally {
       srv.close();
     }
+  });
+
+  it('los números largos que escribe el visitante no se envían al modelo', async () => {
+    say('Ofrecemos gestión de cartera y atención telefónica.');
+    await c.post('/chat', { message: 'mi referencia es 1234567890, ¿qué gestionan en la cartera?' });
+    const sent = env.llm.calls.at(-1)!.map((m) => m.content).join('\n');
+    expect(sent).not.toContain('1234567890');
+    expect(sent).toContain('[número]');
+  });
+
+  it('cliente de proveedor compatible con OpenAI: clave, formato y errores', async () => {
+    const seen: any[] = [];
+    let mode: 'ok' | '429' | 'empty' = 'ok';
+    const srv = createServer((req, res) => {
+      let b = '';
+      req.on('data', (d) => (b += d));
+      req.on('end', () => {
+        seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(b) });
+        res.setHeader('content-type', 'application/json');
+        if (mode === '429') {
+          res.statusCode = 429;
+          res.setHeader('retry-after', '30');
+          return res.end('{}');
+        }
+        res.end(JSON.stringify({ choices: [{ message: { content: mode === 'empty' ? '' : '{"intent":"answer","answer":"ok"}' } }] }));
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const base = `http://127.0.0.1:${(srv.address() as any).port}/openai/v1/`;
+    try {
+      const llm = createOpenAiCompatClient({ llmBaseUrl: base, llmApiKey: 'k-secreta', llmModel: 'm1', llmTimeoutMs: 2000 });
+      expect(await llm.chatJson([{ role: 'user', content: 'hola' }])).toContain('"answer":"ok"');
+      expect(seen[0].url).toBe('/openai/v1/chat/completions');
+      expect(seen[0].auth).toBe('Bearer k-secreta');
+      expect(seen[0].body).toMatchObject({ model: 'm1', response_format: { type: 'json_object' } });
+      // respuesta vacía → no disponible
+      mode = 'empty';
+      await expect(llm.chatJson([{ role: 'user', content: 'x' }])).rejects.toBeInstanceOf(LlmUnavailableError);
+      // límite de uso (429) → no disponible y pausa sin volver a llamar al proveedor
+      mode = '429';
+      await expect(llm.chatJson([{ role: 'user', content: 'x' }])).rejects.toThrow(/429/);
+      const calls = seen.length;
+      await expect(llm.chatJson([{ role: 'user', content: 'x' }])).rejects.toThrow(/pausa/);
+      expect(seen.length).toBe(calls);
+      // sin clave o sin modelo → no disponible, sin hacer ninguna llamada
+      const noKey = createOpenAiCompatClient({ llmBaseUrl: base, llmApiKey: '', llmModel: 'm1', llmTimeoutMs: 500 });
+      await expect(noKey.chatJson([])).rejects.toBeInstanceOf(LlmUnavailableError);
+      expect(seen.length).toBe(calls);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('la configuración elige el proveedor y exige todos sus datos para considerarlo activo', () => {
+    const base = { NODE_ENV: 'test', SESSION_SECRET: 'x'.repeat(40) } as any;
+    expect(loadConfig({ ...base }).llmEnabled).toBe(false);
+    expect(loadConfig({ ...base, OLLAMA_MODEL: 'qwen2.5:3b' }).llmEnabled).toBe(true);
+    expect(loadConfig({ ...base, LLM_PROVIDER: 'openai', LLM_MODEL: 'm' }).llmEnabled).toBe(false); // falta clave y URL
+    const ok = loadConfig({ ...base, LLM_PROVIDER: 'openai', LLM_BASE_URL: 'https://x.test/v1', LLM_API_KEY: 'k', LLM_MODEL: 'm' });
+    expect(ok.llmEnabled).toBe(true);
+    expect(createLlmClient(ok)).toHaveProperty('chatJson');
   });
 
   it('el visitante no puede inyectar una URL de contenido', async () => {

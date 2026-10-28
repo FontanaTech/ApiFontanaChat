@@ -21,6 +21,17 @@ services:
         generateValue: true
       - key: TRUST_PROXY
         value: 1
-      # Render no incluye Ollama: sin modelo el chat responde con el texto del sitio y pasa a WhatsApp.
-      - key: OLLAMA_MODEL
-        value: ""
+      # Modelo alojado (Render no incluye Ollama). Cualquier API compatible con OpenAI sirve; aquí Groq (plan gratuito).
+      # Sin LLM_API_KEY el chat sigue funcionando: responde con el texto del sitio y pasa a WhatsApp.
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        value: llama-3.1-8b-instant
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_TIMEOUT_MS
+        value: 15000
+      - key: CHAT_CONTEXT_MAX_CHARS
+        value: 8000
