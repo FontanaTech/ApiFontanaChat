@@ -394,6 +394,13 @@ describe('chatbot', () => {
     expect(r.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
   });
 
+  it('un proveedor que devuelve answer:null al pasar con un asesor se acepta igual', async () => {
+    env.llm.impl = async () => JSON.stringify({ intent: 'handoff', answer: null, sectionSlug: null });
+    const r = await c.post('/chat', { message: '¿Quién es el representante legal?' });
+    expect(r.body.type).toBe('handoff_offer');
+    expect(r.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
+  });
+
   it('el modelo decide pasar con un asesor cuando no sabe', async () => {
     env.llm.impl = async () => JSON.stringify({ intent: 'handoff', answer: '' });
     const r = await c.post('/chat', { message: '¿Cuánto cuesta el servicio premium?' });

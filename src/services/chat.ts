@@ -31,7 +31,8 @@ const NOT_PUBLISHED = 'No tengo esa información publicada en el sitio.';
 
 const llmOutput = z.object({
   intent: z.enum(['answer', 'handoff', 'clarify', 'unknown']),
-  answer: z.string().max(1000).optional().default(''),
+  // Algunos proveedores devuelven null en lugar de texto vacío cuando pasan a un asesor.
+  answer: z.string().max(1000).nullish().transform((v) => v ?? ''),
   sectionSlug: z.string().max(80).nullable().optional(),
 });
 
@@ -316,6 +317,7 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
     raw = await deps.llm.chatJson(msgs);
   } catch (e) {
     if (!(e instanceof LlmUnavailableError)) console.error('[chat] error inesperado del LLM:', e);
+    else if (!e.message.includes('no configurado')) console.warn(`[chat] modelo no disponible: ${e.message}`);
     // Sin modelo (no configurado o caído): se responde con lo que el sitio dice de la pregunta; si no hay, un asesor.
     const found = extractiveAnswer(knowledge, message, 2);
     if (found) return { type: 'answer', message: found.text, link: link(found.section) };

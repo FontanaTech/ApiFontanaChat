@@ -158,7 +158,7 @@ con el texto de la página (atajo) y pasa a WhatsApp cuando no alcanza.
   tras unos minutos sin uso: la primera petición después puede tardar 1–2 s.
 - **Modelo de IA (opcional).** Render no incluye Ollama. Hay dos caminos:
   - **Proveedor alojado compatible con OpenAI** (recomendado para empezar, con plan gratuito): `LLM_PROVIDER=openai`, `LLM_BASE_URL`, `LLM_MODEL` y `LLM_API_KEY`.
-    Con Groq: `https://api.groq.com/openai/v1` y `llama-3.1-8b-instant` (el `render.yaml` ya los trae; solo falta pegar `LLM_API_KEY` en Render → Environment).
+    Con Groq: `https://api.groq.com/openai/v1` y `qwen/qwen3.8-27b` (el `render.yaml` ya los trae; solo falta pegar `LLM_API_KEY` en Render → Environment).
     Funciona igual con Gemini (`https://generativelanguage.googleapis.com/v1beta/openai/`) u OpenRouter. Los planes gratuitos tienen límites por minuto y por día: si se
     agotan, el proveedor responde 429, la API lo pausa unos segundos y el chat usa el texto del sitio o pasa a WhatsApp. Antes de enviar al modelo se enmascaran los números
     largos que escriba el visitante (cédulas, cuentas) y los temas sensibles ya se desvían a un asesor sin consultar al modelo. Revisa las condiciones de datos de cada proveedor.
