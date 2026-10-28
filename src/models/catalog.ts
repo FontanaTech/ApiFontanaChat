@@ -3,15 +3,16 @@ import type { Queryable } from '../db';
 export interface Advisor { id: string; company_id: string; name: string; active: boolean }
 export interface Phone {
   id: string; company_id: string; advisor_id: string; number: string; label: string; is_primary: boolean; active: boolean;
+  portfolio_id: string | null;
 }
 export interface Button {
-  id: string; company_id: string; key: string; advisor_id: string | null; label: string; color: string; text_color: string;
-  sort_order: number; active: boolean;
+  id: string; company_id: string; key: string; advisor_id: string | null; portfolio_id: string | null; label: string; color: string;
+  text_color: string; sort_order: number; active: boolean;
 }
 
 const ADVISOR_COLS = 'id, company_id, name, active';
-const PHONE_COLS = 'id, company_id, advisor_id, number, label, is_primary, active';
-const BUTTON_COLS = 'id, company_id, key, advisor_id, label, color, text_color, sort_order, active';
+const PHONE_COLS = 'id, company_id, advisor_id, number, label, is_primary, active, portfolio_id';
+const BUTTON_COLS = 'id, company_id, key, advisor_id, portfolio_id, label, color, text_color, sort_order, active';
 
 /* ---------- asesores ---------- */
 export async function listAdvisors(q: Queryable, companyId: string): Promise<Advisor[]> {
@@ -47,25 +48,26 @@ export async function getPhone(q: Queryable, companyId: string, id: string): Pro
   return (await q.query<Phone>(`SELECT ${PHONE_COLS} FROM phones WHERE id = $1 AND company_id = $2`, [id, companyId])).rows[0] ?? null;
 }
 export async function createPhone(
-  q: Queryable, companyId: string, d: { advisorId: string; number: string; label: string; isPrimary: boolean },
+  q: Queryable, companyId: string, d: { advisorId: string; number: string; label: string; isPrimary: boolean; portfolioId?: string | null },
 ): Promise<Phone> {
   return (
     await q.query<Phone>(
-      `INSERT INTO phones (company_id, advisor_id, number, label, is_primary) VALUES ($1, $2, $3, $4, $5) RETURNING ${PHONE_COLS}`,
-      [companyId, d.advisorId, d.number, d.label, d.isPrimary],
+      `INSERT INTO phones (company_id, advisor_id, number, label, is_primary, portfolio_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${PHONE_COLS}`,
+      [companyId, d.advisorId, d.number, d.label, d.isPrimary, d.portfolioId ?? null],
     )
   ).rows[0];
 }
 export async function updatePhone(
-  q: Queryable, companyId: string, id: string, d: { number?: string; label?: string; isPrimary?: boolean; active?: boolean },
+  q: Queryable, companyId: string, id: string, d: { number?: string; label?: string; isPrimary?: boolean; active?: boolean; portfolioId?: string },
 ): Promise<Phone | null> {
   return (
     (
       await q.query<Phone>(
         `UPDATE phones SET number = COALESCE($3, number), label = COALESCE($4, label),
-           is_primary = COALESCE($5, is_primary), active = COALESCE($6, active), updated_at = now()
+           is_primary = COALESCE($5, is_primary), active = COALESCE($6, active),
+           portfolio_id = COALESCE($7::uuid, portfolio_id), updated_at = now()
          WHERE id = $1 AND company_id = $2 RETURNING ${PHONE_COLS}`,
-        [id, companyId, d.number ?? null, d.label ?? null, d.isPrimary ?? null, d.active ?? null],
+        [id, companyId, d.number ?? null, d.label ?? null, d.isPrimary ?? null, d.active ?? null, d.portfolioId ?? null],
       )
     ).rows[0] ?? null
   );
@@ -88,32 +90,34 @@ export async function getButtonByKey(q: Queryable, companyId: string, key: strin
 }
 export async function createButton(
   q: Queryable, companyId: string,
-  d: { key: string; advisorId?: string | null; label: string; color: string; textColor: string; sortOrder: number },
+  d: { key: string; advisorId?: string | null; portfolioId?: string | null; label: string; color: string; textColor: string; sortOrder: number },
 ): Promise<Button> {
   return (
     await q.query<Button>(
-      `INSERT INTO buttons (company_id, key, advisor_id, label, color, text_color, sort_order) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO buttons (company_id, key, advisor_id, portfolio_id, label, color, text_color, sort_order) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING ${BUTTON_COLS}`,
-      [companyId, d.key, d.advisorId ?? null, d.label, d.color, d.textColor, d.sortOrder],
+      [companyId, d.key, d.advisorId ?? null, d.portfolioId ?? null, d.label, d.color, d.textColor, d.sortOrder],
     )
   ).rows[0];
 }
 /** `advisorId: null` desvincula el botón del asesor (pasa a rotativo); `undefined` no lo toca. */
 export async function updateButton(
   q: Queryable, companyId: string, id: string,
-  d: { advisorId?: string | null; label?: string; color?: string; textColor?: string; sortOrder?: number; active?: boolean },
+  d: { advisorId?: string | null; portfolioId?: string | null; label?: string; color?: string; textColor?: string; sortOrder?: number; active?: boolean },
 ): Promise<Button | null> {
   return (
     (
       await q.query<Button>(
         `UPDATE buttons SET
            advisor_id = CASE WHEN $3::boolean THEN $4::uuid ELSE advisor_id END,
+           portfolio_id = CASE WHEN $10::boolean THEN $11::uuid ELSE portfolio_id END,
            label = COALESCE($5, label), color = COALESCE($6, color), text_color = COALESCE($7, text_color),
            sort_order = COALESCE($8, sort_order), active = COALESCE($9, active), updated_at = now()
          WHERE id = $1 AND company_id = $2 RETURNING ${BUTTON_COLS}`,
         [
           id, companyId, d.advisorId !== undefined, d.advisorId ?? null,
           d.label ?? null, d.color ?? null, d.textColor ?? null, d.sortOrder ?? null, d.active ?? null,
+          d.portfolioId !== undefined, d.portfolioId ?? null,
         ],
       )
     ).rows[0] ?? null

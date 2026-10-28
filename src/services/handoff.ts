@@ -2,12 +2,20 @@ import type { Db } from '../db';
 import { HttpError, badRequest, conflict } from '../utils/errors';
 import type { Company } from '../models/companies';
 import { getButtonByKey } from '../models/catalog';
+import { getDefaultPortfolio, getPortfolioByKey } from '../models/portfolios';
 import { findHandoffByKey, insertEvent, insertHandoff, type Handoff, type PublicSession } from '../models/public';
-import { assignRecipient } from './assignment';
+import { assignRecipient, type Recipient, type RecipientFilter } from './assignment';
 
 export interface HandoffInput {
-  /** Opcional: un botón con asesor fijo lo respeta; sin botón (o botón rotativo) se rota entre asesores disponibles. */
+  /** Opcional: un botón con asesor fijo lo respeta; con cartera usa esa cartera; sin nada, la cartera por defecto. */
   buttonKey?: string;
+  /** Cartera pedida de forma explícita: si no existe, está inactiva o no tiene asesores disponibles, es un error. */
+  portfolioKey?: string;
+  /**
+   * Cartera detectada por el chat a partir del texto del visitante: si no tiene asesores disponibles se cae a la
+   * cartera por defecto en vez de fallar.
+   */
+  portfolioKeyHint?: string;
   name?: string;
   reason?: string;
   idempotencyKey: string;
@@ -40,16 +48,38 @@ export async function createHandoff(db: Db, company: Company, session: PublicSes
       return { handoff: existing, replayed: true, advisorName: adv.rows[0]?.name ?? '' };
     }
 
+    // Prioridad: asesor fijo del botón > cartera del botón > cartera pedida > cartera detectada > cartera por defecto.
     let buttonId: string | null = null;
-    let advisorId: string | null = null;
+    const attempts: RecipientFilter[] = [];
+    let strict = false;
     if (input.buttonKey) {
       const button = await getButtonByKey(q, company.id, input.buttonKey);
       if (!button || !button.active) throw badRequest('Botón inexistente o inactivo');
       buttonId = button.id;
-      advisorId = button.advisor_id;
+      if (button.advisor_id) attempts.push({ advisorId: button.advisor_id });
+      else if (button.portfolio_id) attempts.push({ portfolioId: button.portfolio_id });
+    }
+    if (attempts.length === 0 && input.portfolioKey) {
+      const p = await getPortfolioByKey(q, company.id, input.portfolioKey);
+      if (!p || !p.active) throw badRequest('Cartera inexistente o inactiva');
+      attempts.push({ portfolioId: p.id });
+      strict = true;
+    }
+    if (attempts.length === 0 && input.portfolioKeyHint) {
+      const p = await getPortfolioByKey(q, company.id, input.portfolioKeyHint);
+      if (p?.active) attempts.push({ portfolioId: p.id });
+    }
+    if (!strict && !attempts.some((a) => a.advisorId)) {
+      const def = await getDefaultPortfolio(q, company.id);
+      if (def?.active && !attempts.some((a) => a.portfolioId === def.id)) attempts.push({ portfolioId: def.id });
+      attempts.push({}); // último recurso: cualquier asesor disponible de la empresa
     }
 
-    const recipient = await assignRecipient(q, company.id, advisorId);
+    let recipient: Recipient | null = null;
+    for (const f of attempts) {
+      recipient = await assignRecipient(q, company.id, f);
+      if (recipient) break;
+    }
     if (!recipient) throw new HttpError(409, 'no_advisor_available', 'No hay un asesor disponible en este momento');
 
     const refCode = session.id.slice(0, 4) + Date.now().toString(36).slice(-4).toUpperCase();
@@ -59,7 +89,7 @@ export async function createHandoff(db: Db, company: Company, session: PublicSes
     let handoff: Handoff;
     try {
       handoff = await insertHandoff(q, {
-        companyId: company.id, sessionId: session.id, key: input.idempotencyKey, buttonId,
+        companyId: company.id, sessionId: session.id, key: input.idempotencyKey, buttonId, portfolioId: recipient.portfolioId,
         advisorId: recipient.advisorId, phoneId: recipient.phoneId, phoneNumber: recipient.number,
         name, reason, waUrl,
       });

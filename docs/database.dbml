@@ -1,4 +1,4 @@
-// DBML actualizado hasta la migracion 008 (sin areas: contacto directo al asesor). Mantener sincronizado con /migrations.
+// DBML actualizado hasta la migracion 009 (sin areas: contacto directo al asesor). Mantener sincronizado con /migrations.
 // Visualizar en https://dbdiagram.io
 
 Table companies {
@@ -54,6 +54,22 @@ Table admin_sessions {
   revoked_at timestamptz
 }
 
+Table portfolios {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  key text [not null]
+  name text [not null]
+  description text [not null]
+  aliases text[] [not null, note: 'palabras (normalizadas) con las que el visitante nombra la cartera']
+  is_default boolean [not null, default: false, note: 'una por empresa: recibe las derivaciones sin cartera identificada']
+  active boolean [not null, default: true]
+  rr_cursor integer [not null, default: 0, note: 'turno del round robin dentro de la cartera']
+  sort_order integer [not null, default: 0]
+  created_at timestamptz
+  updated_at timestamptz
+  indexes { (company_id, key) [unique] }
+}
+
 Table advisors {
   id uuid [pk]
   company_id uuid [not null, ref: > companies.id]
@@ -71,6 +87,7 @@ Table phones {
   label text [not null]
   is_primary boolean [not null, default: false]
   active boolean [not null, default: true]
+  portfolio_id uuid [ref: > portfolios.id, note: 'cartera a la que pertenece el telefono']
   created_at timestamptz
   updated_at timestamptz
 }
@@ -80,6 +97,7 @@ Table buttons {
   company_id uuid [not null, ref: > companies.id]
   key text [not null]
   advisor_id uuid [ref: > advisors.id, note: 'NULL = cualquier asesor disponible (rotativo)']
+  portfolio_id uuid [ref: > portfolios.id, note: 'sin asesor fijo: cartera del boton; NULL = cartera por defecto']
   label text [not null]
   color text [not null]
   text_color text [not null]
@@ -106,6 +124,7 @@ Table handoffs {
   session_id uuid [not null, ref: > public_sessions.id]
   idempotency_key text [not null]
   button_id uuid [ref: > buttons.id]
+  portfolio_id uuid [ref: > portfolios.id, note: 'cartera que atendio la derivacion']
   advisor_id uuid [not null, ref: > advisors.id]
   phone_id uuid [not null, ref: > phones.id]
   phone_number text [not null, note: 'instantanea del numero vigente al crear']

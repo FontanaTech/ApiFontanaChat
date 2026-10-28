@@ -36,6 +36,16 @@ export function MetricsTab({ companyId }: { companyId: string }) {
             ))}
           </div>
           <div className="card">
+            <h2>Por cartera</h2>
+            <table>
+              <thead><tr><th>Cartera</th><th>Derivaciones</th><th>Clics en WhatsApp</th></tr></thead>
+              <tbody>
+                {(d.byPortfolio ?? []).map((a: any) => <tr key={a.portfolio}><td>{a.portfolio}</td><td>{a.handoffs}</td><td>{a.whatsapp_clicks}</td></tr>)}
+                {(d.byPortfolio ?? []).length === 0 && <tr><td colSpan={3} className="muted">Sin derivaciones en el rango.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="card">
             <h2>Por asesor</h2>
             <table>
               <thead><tr><th>Asesor</th><th>Derivaciones</th><th>Clics en WhatsApp</th></tr></thead>

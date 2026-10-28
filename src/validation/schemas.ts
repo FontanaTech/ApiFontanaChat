@@ -52,6 +52,7 @@ export const createPhoneBody = z.object({
   number: phoneNumber,
   label: z.string().trim().max(60).default(''),
   isPrimary: z.boolean().default(false),
+  portfolioId: uuid.optional(), // sin él, va a la cartera por defecto
 });
 export const updatePhoneBody = z
   .object({
@@ -59,6 +60,7 @@ export const updatePhoneBody = z
     label: z.string().trim().max(60).optional(),
     isPrimary: z.boolean().optional(),
     active: z.boolean().optional(),
+    portfolioId: uuid.optional(),
   })
   .strict();
 
@@ -66,6 +68,7 @@ export const updatePhoneBody = z
 export const createButtonBody = z.object({
   key: slug,
   advisorId: uuid.nullable().optional(),
+  portfolioId: uuid.nullable().optional(), // sin asesor fijo: cartera del botón (null = cartera por defecto)
   label: trimmed(1, 60),
   color: hexColor.default('#0f766e'),
   textColor: hexColor.default('#ffffff'),
@@ -74,11 +77,33 @@ export const createButtonBody = z.object({
 export const updateButtonBody = z
   .object({
     advisorId: uuid.nullable().optional(),
+    portfolioId: uuid.nullable().optional(),
     label: trimmed(1, 60).optional(),
     color: hexColor.optional(),
     textColor: hexColor.optional(),
     sortOrder: z.number().int().min(0).max(10000).optional(),
     active: z.boolean().optional(),
+  })
+  .strict();
+
+/** Palabras con las que el visitante nombra la cartera (p. ej. el nombre de la entidad); el chat las usa para elegirla. */
+const aliasList = z.array(trimmed(2, 60)).max(20);
+export const createPortfolioBody = z.object({
+  key: slug,
+  name: trimmed(1, 120),
+  description: z.string().trim().max(500).default(''),
+  aliases: aliasList.default([]),
+  isDefault: z.boolean().default(false),
+  sortOrder: z.number().int().min(0).max(10000).default(0),
+});
+export const updatePortfolioBody = z
+  .object({
+    name: trimmed(1, 120).optional(),
+    description: z.string().trim().max(500).optional(),
+    aliases: aliasList.optional(),
+    isDefault: z.literal(true).optional(),
+    active: z.boolean().optional(),
+    sortOrder: z.number().int().min(0).max(10000).optional(),
   })
   .strict();
 
@@ -112,6 +137,7 @@ export const eventBody = z.object({
 });
 export const handoffBody = z.object({
   buttonKey: slug.optional(),
+  portfolioKey: slug.optional(),
   // Opcionales: ir a WhatsApp no exige que el visitante deje datos.
   name: trimmed(2, 80).optional(),
   reason: trimmed(3, 300).optional(),

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { AppDeps } from '../app-types';
 import { getButtonByKey, listButtons } from '../models/catalog';
+import { listPortfolios } from '../models/portfolios';
 import { createPublicSession, getHandoffForSession, insertEvent, markWhatsappClicked } from '../models/public';
 import { hashToken, randomToken } from '../utils/crypto';
 import { badRequest, notFound } from '../utils/errors';
@@ -41,14 +42,19 @@ export function publicController(deps: AppDeps) {
     /** Botones activos con disponibilidad; nunca incluye números de teléfono. */
     async config(req: Request, res: Response) {
       const { company } = req.pub!;
-      const [buttons, recipients] = await Promise.all([listButtons(deps.db, company.id, true), eligibleRecipients(deps.db, company.id)]);
+      const [buttons, recipients, wallets] = await Promise.all([
+        listButtons(deps.db, company.id, true), eligibleRecipients(deps.db, company.id), listPortfolios(deps.db, company.id, true),
+      ]);
       const available = new Set(recipients.map((r) => r.advisorId));
+      const withPhones = new Set(wallets.filter((w) => w.phone_count > 0).map((w) => w.id));
       res.json({
         company: { slug: company.slug, name: company.name },
         available: available.size > 0,
+        // Carteras que hoy pueden atender (solo nombre; nunca teléfonos).
+        portfolios: wallets.filter((w) => w.phone_count > 0).map((w) => ({ key: w.key, name: w.name })),
         buttons: buttons.map((b) => ({
           key: b.key, label: b.label, color: b.color, textColor: b.text_color,
-          available: b.advisor_id ? available.has(b.advisor_id) : available.size > 0,
+          available: b.advisor_id ? available.has(b.advisor_id) : b.portfolio_id ? withPhones.has(b.portfolio_id) : available.size > 0,
         })),
       });
     },
@@ -81,7 +87,7 @@ export function publicController(deps: AppDeps) {
       }
       const { company, session } = req.pub!;
       const r = await createHandoff(deps.db, company, session!, {
-        buttonKey: body.buttonKey, name: body.name, reason: body.reason, idempotencyKey: key,
+        buttonKey: body.buttonKey, portfolioKey: body.portfolioKey, name: body.name, reason: body.reason, idempotencyKey: key,
       });
       res.status(r.replayed ? 200 : 201).json({
         handoffId: r.handoff.id,

@@ -85,11 +85,14 @@ Opción A (panel, recomendada): *Empresas → Nueva empresa → «Prellenar AAgo
 Opción B: `npm run seed:aagora` (opcionalmente `AAGORA_ORIGINS=https://...,http://localhost:5173` y `AAGORA_CONTENT_URL=...`; `--only-company` omite el botón).
 El seed crea la empresa, dominios y un botón inicial «Hablar con un asesor». **No crea asesores ni teléfonos.**
 
-No existen «áreas»: el contacto es directo con el asesor. Los asesores activos con teléfono activo se reparten las
-conversaciones por turnos (round robin); un botón puede fijarse a un asesor concreto.
+No existen «áreas»: el contacto es directo con el asesor. Los teléfonos se organizan por **carteras** dentro de cada empresa (una cartera agrupa los teléfonos y asesores que atienden a un cliente acreedor).
+Cada cartera reparte las conversaciones por turnos (round robin) entre sus asesores con teléfono activo; un botón puede fijarse a un asesor concreto o a una cartera. Toda empresa tiene una
+cartera **por defecto** que recibe las derivaciones sin cartera identificada (AAgora arranca con «Cartera de pruebas», que contiene el número actual). Si el visitante nombra una cartera en el chat
+(las *palabras que la identifican* se configuran en la pestaña **Carteras**), se le pasa con los asesores de esa cartera; si esa cartera no tiene asesores disponibles, cae a la por defecto.
 
 La pestaña *General* muestra un checklist con lo que falta (`GET /companies/:id/setup`). Los pasos requeridos son tres:
 
+0. **Carteras**: la cartera por defecto ya existe; crea las demás cuando recibas cada cartera y asigna sus teléfonos en **Asesores y números** (cada teléfono pertenece a una cartera).
 1. **Dominios**: el origen real del sitio (ej. `https://www.tudominio.com`, sin ruta) y `http://localhost:5173` (o el puerto del sitio) para pruebas.
 2. **Asesores y números**: crea asesores y escribe **los números reales** (formato internacional con código de país). El sistema no trae ninguno.
 3. **General**: URL de `chatbot-content.json` (dominio permitido, https) → *Sincronizar ahora*.
@@ -106,14 +109,17 @@ Todas bajo `/api/v1/public/:slug`. Exigen cabecera `Origin` registrada para esa 
 | Método y ruta | Descripción |
 |---|---|
 | `POST /sessions` | Crea sesión → `{token, expiresAt}` (token temporal; se guarda hash) |
-| `GET /config` | `{company, available, buttons[{key,label,color,textColor,available}]}` (sin teléfonos) |
+| `GET /config` | `{company, available, portfolios[{key,name}], buttons[{key,label,color,textColor,available}]}` (sin teléfonos) |
 | `POST /events` | `page_view`, `chat_open`, `button_click` |
 | `POST /chat` | `{message, history?}` → `{type: answer\|handoff_offer\|fallback, message, link?, waUrl?, handoffId?}` (con `waUrl`, el sitio muestra «Continuar en WhatsApp»; sin formulario) |
-| `POST /handoffs` | `{buttonKey?, name?, reason?}` (nombre y motivo opcionales) + `Idempotency-Key` → `{handoffId, advisorName, waUrl, ...}` (sin `buttonKey` o con botón rotativo, reparte por turnos) |
+| `POST /handoffs` | `{buttonKey?, portfolioKey?, name?, reason?}` (nombre y motivo opcionales) + `Idempotency-Key` → `{handoffId, advisorName, waUrl, ...}` (sin `buttonKey` o con botón rotativo, reparte por turnos) |
 | `POST /handoffs/:id/whatsapp-click` | Registra `whatsapp_click` (un clic, **no** «mensaje enviado») |
 
 `Authorization: Bearer <token>` en todas salvo `sessions`. `waUrl` (`https://wa.me/<número vigente>?text=...`) solo la construye el servidor
 con el teléfono leído de la base en ese instante; el usuario debe pulsar «Enviar» en WhatsApp.
+
+**Datos de contacto.** El sitio se analiza al sincronizarlo: las líneas con teléfono, correo, dirección u horario se identifican (un NIT no cuenta como teléfono). Si el visitante pregunta por el teléfono, 
+el correo, la dirección o el horario, el chat responde al instante con ese dato tal cual lo publica el sitio (sin repetirlo por cada sede y prefiriendo la sede que nombre), sin usar el modelo. Si el sitio no publica el dato, no lo inventa y pasa a un asesor.
 
 **Chat.** Reglas deterministas del servidor primero (saludo, pedido de humano, pagos/acuerdos/saldos/paz y salvo/jurídico/datos personales →
 ofrecer un asesor sin consultar al modelo). Si no, Ollama (solo backend, `OLLAMA_BASE_URL`/`OLLAMA_MODEL`, timeout `OLLAMA_TIMEOUT_MS`, salida JSON

@@ -60,6 +60,10 @@ export function adminRouter(deps: AppDeps) {
   co.post('/phones', h(a.createPhone));
   co.patch('/phones/:id', h(a.updatePhone));
 
+  co.get('/portfolios', h(a.listPortfolios));
+  co.post('/portfolios', h(a.createPortfolio));
+  co.patch('/portfolios/:id', h(a.updatePortfolio));
+
   co.get('/buttons', h(a.listButtons));
   co.post('/buttons', h(a.createButton));
   co.patch('/buttons/:id', h(a.updateButton));

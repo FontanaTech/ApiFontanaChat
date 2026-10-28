@@ -201,7 +201,7 @@ describe('derivación a WhatsApp', () => {
   it('doble handoff con la misma clave es idempotente (también en paralelo)', async () => {
     const c = await publicClient(env, 'co-a', ORIGIN_A);
     const body = { name: 'Marta', reason: 'consulta idempotente' };
-    const cursor = async () => (await env.db.query<{ rr_cursor: number }>('SELECT rr_cursor FROM companies WHERE id = $1', [A.companyId])).rows[0].rr_cursor;
+    const cursor = async () => (await env.db.query<{ rr_cursor: number }>('SELECT rr_cursor FROM portfolios WHERE company_id = $1 AND is_default', [A.companyId])).rows[0].rr_cursor;
     const cursorBefore = await cursor();
     const [r1, r2] = await Promise.all([
       c.post('/handoffs', body, { 'Idempotency-Key': 'idem-key-0001' }),

@@ -7,6 +7,7 @@ import * as audit from '../models/audit';
 import * as catalog from '../models/catalog';
 import * as companies from '../models/companies';
 import * as origins from '../models/origins';
+import * as portfolios from '../models/portfolios';
 import * as usage from '../models/usage';
 import * as pub from '../models/public';
 import { badRequest, forbidden, notFound } from '../utils/errors';
@@ -100,6 +101,8 @@ export function adminController(deps: AppDeps) {
       const c = await audited(req, { companyId: 'self', entity: 'company', action: 'create' }, async (q) => {
         const company = await companies.createCompany(q, { slug: b.slug, name: b.name, contentUrl: b.contentUrl });
         for (const o of b.origins ?? []) await origins.createOrigin(q, company.id, o);
+        // Toda empresa nace con una cartera por defecto; los teléfonos nuevos van a ella hasta que se creen las demás.
+        await portfolios.createPortfolio(q, company.id, { key: 'general', name: 'General', description: 'Cartera por defecto', isDefault: true });
         return { after: company };
       });
       res.status(201).json(c);
@@ -194,15 +197,40 @@ export function adminController(deps: AppDeps) {
       const b = parse(v.createPhoneBody, req.body);
       res.status(201).json(await audited(req, { companyId: cid(req), entity: 'phone', action: 'create' }, async (q) => {
         must(await catalog.getAdvisor(q, cid(req), b.advisorId), 'Asesor no encontrado en esta empresa');
-        return { after: await catalog.createPhone(q, cid(req), b) };
+        let portfolioId = b.portfolioId ?? null;
+        if (portfolioId) must(await portfolios.getPortfolio(q, cid(req), portfolioId), 'Cartera no encontrada en esta empresa');
+        else portfolioId = (await portfolios.getDefaultPortfolio(q, cid(req)))?.id ?? null;
+        return { after: await catalog.createPhone(q, cid(req), { ...b, portfolioId }) };
       }));
     },
     async updatePhone(req: Request, res: Response) {
       const b = parse(v.updatePhoneBody, req.body);
-      res.json(await audited(req, { companyId: cid(req), entity: 'phone', action: b.active === false ? 'deactivate' : 'update' }, async (q) => ({
-        before: must(await catalog.getPhone(q, cid(req), id(req))),
-        after: must(await catalog.updatePhone(q, cid(req), id(req), b)),
+      res.json(await audited(req, { companyId: cid(req), entity: 'phone', action: b.active === false ? 'deactivate' : 'update' }, async (q) => {
+        const before = must(await catalog.getPhone(q, cid(req), id(req)));
+        if (b.portfolioId) must(await portfolios.getPortfolio(q, cid(req), b.portfolioId), 'Cartera no encontrada en esta empresa');
+        return { before, after: must(await catalog.updatePhone(q, cid(req), id(req), b)) };
+      }));
+    },
+
+    /* ---------- carteras ---------- */
+    async listPortfolios(req: Request, res: Response) {
+      res.json({ items: await portfolios.listPortfolios(db, cid(req)) });
+    },
+    async createPortfolio(req: Request, res: Response) {
+      const b = parse(v.createPortfolioBody, req.body);
+      res.status(201).json(await audited(req, { companyId: cid(req), entity: 'portfolio', action: 'create' }, async (q) => ({
+        after: await portfolios.createPortfolio(q, cid(req), b),
       })));
+    },
+    async updatePortfolio(req: Request, res: Response) {
+      const b = parse(v.updatePortfolioBody, req.body);
+      res.json(await audited(req, { companyId: cid(req), entity: 'portfolio', action: b.active === false ? 'deactivate' : 'update' }, async (q) => {
+        const before = must(await portfolios.getPortfolio(q, cid(req), id(req)));
+        if (b.active === false && before.is_default) {
+          throw badRequest('La cartera por defecto no se puede desactivar: primero elige otra como por defecto.');
+        }
+        return { before, after: must(await portfolios.updatePortfolio(q, cid(req), id(req), b)) };
+      }));
     },
 
     /* ---------- botones ---------- */
@@ -213,6 +241,7 @@ export function adminController(deps: AppDeps) {
       const b = parse(v.createButtonBody, req.body);
       res.status(201).json(await audited(req, { companyId: cid(req), entity: 'button', action: 'create' }, async (q) => {
         if (b.advisorId) must(await catalog.getAdvisor(q, cid(req), b.advisorId), 'Asesor no encontrado en esta empresa');
+        if (b.portfolioId) must(await portfolios.getPortfolio(q, cid(req), b.portfolioId), 'Cartera no encontrada en esta empresa');
         return { after: await catalog.createButton(q, cid(req), b) };
       }));
     },
@@ -221,6 +250,7 @@ export function adminController(deps: AppDeps) {
       res.json(await audited(req, { companyId: cid(req), entity: 'button', action: b.active === false ? 'deactivate' : 'update' }, async (q) => {
         const before = must(await catalog.getButton(q, cid(req), id(req)));
         if (b.advisorId) must(await catalog.getAdvisor(q, cid(req), b.advisorId), 'Asesor no encontrado en esta empresa');
+        if (b.portfolioId) must(await portfolios.getPortfolio(q, cid(req), b.portfolioId), 'Cartera no encontrada en esta empresa');
         return { before, after: must(await catalog.updateButton(q, cid(req), id(req), b)) };
       }));
     },

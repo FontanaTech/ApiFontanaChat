@@ -28,15 +28,15 @@ export function RecordsTab({ companyId }: { companyId: string }) {
         <h2>Derivaciones a WhatsApp</h2>
         <p className="muted">«Clic en WhatsApp» significa que la persona abrió el enlace; no confirma que haya enviado el mensaje.</p>
         <table>
-          <thead><tr><th>Fecha</th><th>Visitante</th><th>Motivo</th><th>Botón</th><th>Asesor</th><th>Número</th><th>Estado</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Visitante</th><th>Motivo</th><th>Cartera</th><th>Botón</th><th>Asesor</th><th>Número</th><th>Estado</th></tr></thead>
           <tbody>
             {h.data?.items.map((r) => (
               <tr key={r.id}>
-                <td>{fmt(r.created_at)}</td><td>{r.visitor_name}</td><td>{r.reason}</td><td>{r.button_label ?? '—'}</td><td>{r.advisor_name}</td><td><code>{r.phone_number}</code></td>
+                <td>{fmt(r.created_at)}</td><td>{r.visitor_name}</td><td>{r.reason}</td><td>{r.portfolio_name ?? '—'}</td><td>{r.button_label ?? '—'}</td><td>{r.advisor_name}</td><td><code>{r.phone_number}</code></td>
                 <td>{r.status === 'whatsapp_clicked' ? 'Clic en WhatsApp' : 'Creada'}</td>
               </tr>
             ))}
-            {h.data?.items.length === 0 && <tr><td colSpan={7} className="muted">Sin registros en el rango.</td></tr>}
+            {h.data?.items.length === 0 && <tr><td colSpan={8} className="muted">Sin registros en el rango.</td></tr>}
           </tbody>
         </table>
       </div>

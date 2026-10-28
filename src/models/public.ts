@@ -51,6 +51,7 @@ export interface Handoff {
   company_id: string;
   session_id: string;
   button_id: string | null;
+  portfolio_id: string | null;
   advisor_id: string;
   phone_id: string;
   phone_number: string;
@@ -75,15 +76,15 @@ export async function findHandoffByKey(q: Queryable, companyId: string, sessionI
 export async function insertHandoff(
   q: Queryable,
   d: {
-    companyId: string; sessionId: string; key: string; buttonId: string | null; advisorId: string;
+    companyId: string; sessionId: string; key: string; buttonId: string | null; portfolioId: string | null; advisorId: string;
     phoneId: string; phoneNumber: string; name: string; reason: string; waUrl: string;
   },
 ): Promise<Handoff> {
   return (
     await q.query<Handoff>(
-      `INSERT INTO handoffs (company_id, session_id, idempotency_key, button_id, advisor_id, phone_id, phone_number,
-         visitor_name, reason, wa_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [d.companyId, d.sessionId, d.key, d.buttonId, d.advisorId, d.phoneId, d.phoneNumber, d.name, d.reason, d.waUrl],
+      `INSERT INTO handoffs (company_id, session_id, idempotency_key, button_id, portfolio_id, advisor_id, phone_id, phone_number,
+         visitor_name, reason, wa_url) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [d.companyId, d.sessionId, d.key, d.buttonId, d.portfolioId, d.advisorId, d.phoneId, d.phoneNumber, d.name, d.reason, d.waUrl],
     )
   ).rows[0];
 }
@@ -110,9 +111,10 @@ export async function listHandoffs(q: Queryable, companyId: string, from: Date, 
   return (
     await q.query(
       `SELECT h.id, h.created_at, h.visitor_name, h.reason, h.phone_number, h.status, h.whatsapp_clicked_at,
-              b.label AS button_label, ad.name AS advisor_name
+              b.label AS button_label, ad.name AS advisor_name, w.name AS portfolio_name
        FROM handoffs h
        LEFT JOIN buttons b ON b.id = h.button_id AND b.company_id = h.company_id
+       LEFT JOIN portfolios w ON w.id = h.portfolio_id AND w.company_id = h.company_id
        JOIN advisors ad ON ad.id = h.advisor_id AND ad.company_id = h.company_id
        WHERE h.company_id = $1 AND h.created_at >= $2 AND h.created_at < $3
        ORDER BY h.created_at DESC LIMIT $4 OFFSET $5`,
@@ -149,6 +151,13 @@ export async function metrics(q: Queryable, companyId: string, from: Date, to: D
      WHERE h.company_id = $1 AND h.created_at >= $2 AND h.created_at < $3 GROUP BY ad.id, ad.name ORDER BY handoffs DESC`,
     [companyId, f, t],
   );
+  const byPortfolio = await q.query(
+    `SELECT COALESCE(w.name, '(sin cartera)') AS portfolio, count(*)::int AS handoffs,
+            count(*) FILTER (WHERE h.status = 'whatsapp_clicked')::int AS whatsapp_clicks
+     FROM handoffs h LEFT JOIN portfolios w ON w.id = h.portfolio_id AND w.company_id = h.company_id
+     WHERE h.company_id = $1 AND h.created_at >= $2 AND h.created_at < $3 GROUP BY w.id, w.name ORDER BY handoffs DESC`,
+    [companyId, f, t],
+  );
   const byDay = await q.query(
     `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, type, count(*)::int AS total FROM events
      WHERE company_id = $1 AND created_at >= $2 AND created_at < $3 GROUP BY 1, 2 ORDER BY 1`,
@@ -160,5 +169,5 @@ export async function metrics(q: Queryable, companyId: string, from: Date, to: D
     counts[r.type] = r.total;
     sessions[r.type] = r.sessions;
   }
-  return { counts, sessions, byAdvisor: byAdvisor.rows, byDay: byDay.rows };
+  return { counts, sessions, byAdvisor: byAdvisor.rows, byPortfolio: byPortfolio.rows, byDay: byDay.rows };
 }

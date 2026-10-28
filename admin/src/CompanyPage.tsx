@@ -6,12 +6,14 @@ import { ButtonsTab } from './tabs/ButtonsTab';
 import { GeneralTab } from './tabs/GeneralTab';
 import { MetricsTab } from './tabs/MetricsTab';
 import { OriginsTab } from './tabs/OriginsTab';
+import { PortfoliosTab } from './tabs/PortfoliosTab';
 import { RecordsTab } from './tabs/RecordsTab';
 import { ErrorBox, useLoad } from './ui';
 
 const TABS = [
   ['general', 'General'],
   ['origins', 'Dominios'],
+  ['portfolios', 'Carteras'],
   ['advisors', 'Asesores y números'],
   ['buttons', 'Botones'],
   ['records', 'Registros'],
@@ -39,6 +41,7 @@ export function CompanyPage({ id, admin, onBack }: { id: string; admin: Admin; o
         <section>
           {tab === 'general' && <GeneralTab company={c} isSuper={admin.role === 'superadmin'} reload={company.reload} />}
           {tab === 'origins' && <OriginsTab companyId={id} />}
+          {tab === 'portfolios' && <PortfoliosTab companyId={id} />}
           {tab === 'advisors' && <AdvisorsTab companyId={id} />}
           {tab === 'buttons' && <ButtonsTab companyId={id} />}
           {tab === 'records' && <RecordsTab companyId={id} />}

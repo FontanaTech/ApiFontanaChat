@@ -2,6 +2,7 @@ import { loadConfig } from '../config/env';
 import { createPgDb, type Queryable } from '../db';
 import { recordAudit } from '../models/audit';
 import { createButton, getButtonByKey } from '../models/catalog';
+import { createPortfolio, getDefaultPortfolio } from '../models/portfolios';
 import { createCompany, getCompanyBySlug } from '../models/companies';
 import { createOrigin, listOrigins } from '../models/origins';
 import { originStr } from '../validation/schemas';
@@ -22,6 +23,10 @@ export async function seedAagora(q: Queryable, opts: { origins?: string[]; conte
   for (const raw of opts.origins ?? []) {
     const origin = originStr.parse(raw);
     if (!existing.has(origin)) await createOrigin(q, company.id, origin);
+  }
+  // Cartera inicial de pruebas (por defecto): recibe los teléfonos hasta que se carguen las carteras reales.
+  if (!(await getDefaultPortfolio(q, company.id))) {
+    await createPortfolio(q, company.id, { key: 'pruebas', name: 'Cartera de pruebas', description: 'Cartera inicial de pruebas', isDefault: true });
   }
   if (opts.withButton !== false && !(await getButtonByKey(q, company.id, AAGORA_BUTTON.key))) {
     await createButton(q, company.id, { ...AAGORA_BUTTON, sortOrder: 10 });

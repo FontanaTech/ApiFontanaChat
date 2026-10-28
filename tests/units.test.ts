@@ -167,6 +167,7 @@ describe('seed:aagora', () => {
     expect(await n('companies')).toBe(1);
     expect(await n('allowed_origins')).toBe(2);
     expect(await n('buttons')).toBe(1);
+    expect(await n('portfolios')).toBe(1);
     expect(await n('advisors')).toBe(0);
     expect(await n('phones')).toBe(0);
     await db.close();
