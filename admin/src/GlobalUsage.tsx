@@ -11,14 +11,14 @@ interface GlobalUsage {
   days: { day: string; requests: number; tokens: number }[];
 }
 
-const num = (n: number) => n.toLocaleString('es');
+const num = (n: number) => n.toLocaleString('es-CO');
 export const levelOf = (pct: number) => (pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '');
 
 /** Barra de progreso con porcentaje; `used` frente a `limit`. */
-export function Meter({ used, limit, label, small }: { used: number; limit: number; label: string; small?: boolean }) {
+export function Meter({ used, limit, label, small, large }: { used: number; limit: number; label: string; small?: boolean; large?: boolean }) {
   const pct = Math.min(100, Math.round((used / limit) * 100));
   return (
-    <div className={`meter ${small ? 'sm' : ''} ${levelOf(pct)}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label}>
+    <div className={`meter ${small ? 'sm' : ''} ${large ? 'lg' : ''} ${levelOf(pct)}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={label}>
       <span style={{ width: `${pct}%` }} />
     </div>
   );
@@ -44,6 +44,7 @@ export function GlobalUsageCard() {
   return (
     <div className="card">
       <h2>Uso general del modelo de IA</h2>
+      <p className="muted">Todas las empresas comparten el mismo pozo diario de tokens; al agotarse, el chat sigue funcionando sin el modelo.</p>
       <ErrorBox msg={usage.error} />
       {u && !u.enabled && <p className="muted">Modelo de IA no configurado: el chat responde con el texto de los sitios y pasa a un asesor cuando no alcanza.</p>}
       {u && u.enabled && g && (
@@ -52,7 +53,7 @@ export function GlobalUsageCard() {
             <strong>{num(g.tokens)}</strong>{g.limit ? <> de <strong>{num(g.limit)}</strong></> : null} tokens hoy · {num(g.requests)} {g.requests === 1 ? 'pregunta' : 'preguntas'} al modelo
             {pct != null && <> · <strong>{pct}%</strong> del límite diario de la API</>}
           </p>
-          {g.limit ? <Meter used={g.tokens} limit={g.limit} label="Uso diario general del modelo de IA" /> : <p className="muted">Sin tope general: define <code>LLM_DAILY_TOKEN_LIMIT</code> en Render para que el medidor tenga un límite.</p>}
+          {g.limit ? <Meter large used={g.tokens} limit={g.limit} label="Uso diario general del modelo de IA" /> : <p className="muted">Sin tope general (<code>LLM_DAILY_TOKEN_LIMIT=0</code> o modelo local): no hay límite contra el cual medir. Quita esa variable o ponle un valor, p. ej. 180000.</p>}
           <p className="muted">
             Modelo <code>{u.model}</code> · {resetText(u.resetsAt)}. El conteo es por día UTC, igual que el proveedor.
           </p>

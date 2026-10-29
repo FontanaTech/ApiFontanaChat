@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react';
 import { api } from './api';
-import { GlobalUsageCard } from './GlobalUsage';
 import { Badge, ErrorBox, Field, fmt, useAction, useLoad } from './ui';
 
 interface Company {
@@ -40,7 +39,6 @@ export function CompaniesPage({ onOpen }: { onOpen: (id: string) => void }) {
     <>
       <h1>Empresas</h1>
       <ErrorBox msg={error} />
-      <GlobalUsageCard />
       <div className="card">
         <table>
           <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contenido del chat</th><th /></tr></thead>

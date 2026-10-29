@@ -18,7 +18,7 @@ interface LlmUsage {
   days: { day: string; requests: number; tokens: number }[];
 }
 
-const num = (n: number) => n.toLocaleString('es');
+const num = (n: number) => n.toLocaleString('es-CO');
 
 /** Consumo diario del modelo de IA y límite propio de la empresa. */
 function LlmUsageCard({ companyId, savedLimit, isSuper, onSaved }: { companyId: string; savedLimit: number | null; isSuper: boolean; onSaved: () => void }) {

@@ -56,3 +56,14 @@ describe('uso general del modelo de IA', () => {
     expect((await sup.get(`/companies/${A.companyId}/llm-usage`)).body.globalToday).toBe(65000);
   });
 });
+
+describe('tope general por defecto', () => {
+  const base = { NODE_ENV: 'test', SESSION_SECRET: 'test-secret-test-secret-test-secret-123' };
+  it('con un proveedor alojado el tope es 180000 aunque no se defina; 0 lo desactiva; con Ollama no hay tope', async () => {
+    const { loadConfig } = await import('../src/config/env');
+    expect(loadConfig({ ...base, LLM_PROVIDER: 'openai' } as any).llmDailyTokenLimit).toBe(180000);
+    expect(loadConfig({ ...base, LLM_PROVIDER: 'openai', LLM_DAILY_TOKEN_LIMIT: '90000' } as any).llmDailyTokenLimit).toBe(90000);
+    expect(loadConfig({ ...base, LLM_PROVIDER: 'openai', LLM_DAILY_TOKEN_LIMIT: '0' } as any).llmDailyTokenLimit).toBe(0);
+    expect(loadConfig({ ...base, LLM_PROVIDER: 'ollama' } as any).llmDailyTokenLimit).toBe(0);
+  });
+});
