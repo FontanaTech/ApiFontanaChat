@@ -49,7 +49,7 @@ export function App() {
   return (
     <>
       <header className="topbar">
-        <strong>Panel Fontanachat</strong>
+        <strong className="brand">Panel Fontanachat</strong>
         <nav>
           {isSuper && <button className={`link ${view.page === 'companies' || view.page === 'company' ? 'active' : ''}`} onClick={() => setView({ page: 'companies' })}>Empresas</button>}
           {isSuper && <button className={`link ${view.page === 'usage' ? 'active' : ''}`} onClick={() => setView({ page: 'usage' })}>Uso</button>}

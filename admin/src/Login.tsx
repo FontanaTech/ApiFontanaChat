@@ -16,6 +16,7 @@ export function Login({ onLogin }: { onLogin: (a: Admin, csrf: string) => void }
   };
   return (
     <form className="card login" onSubmit={submit}>
+      <div className="brand-mark" aria-hidden="true" />
       <h1>Panel Fontanachat</h1>
       <p className="muted">Acceso solo para administradores autorizados.</p>
       <Field label="Correo">
