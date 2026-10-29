@@ -38,6 +38,8 @@ export function adminRouter(deps: AppDeps) {
   r.post('/admins', guard, sup, h(a.createAdmin));
   r.patch('/admins/:id', guard, sup, h(a.updateAdmin));
 
+  r.get('/llm-usage', guard, sup, h(a.llmUsageAll));
+
   r.get('/companies', guard, h(a.listCompanies));
   r.post('/companies', guard, sup, h(a.createCompany));
 

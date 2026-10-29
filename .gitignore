@@ -9,3 +9,6 @@ client/dist/
 coverage/
 .vite/
 Datos de creacion/
+
+# Documentación interna: no se comparte
+docs/DOCUMENTACION.md

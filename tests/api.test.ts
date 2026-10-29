@@ -644,7 +644,8 @@ describe('chatbot', () => {
     expect(u).toMatchObject({ enabled: false, provider: 'ollama', dailyLimit: null, globalLimit: null });
     expect(u.today.tokens).toBeGreaterThan(0);
     expect(u.days[0]).toMatchObject({ requests: expect.any(Number), tokens: u.today.tokens });
-    expect(u.globalToday).toBeGreaterThanOrEqual(u.today.tokens);
+    expect(u.globalToday).toBeNull(); // el total de las demás empresas solo lo ve el superadmin
+    expect((await sup.get(`/companies/${F.companyId}/llm-usage`)).body.globalToday).toBeGreaterThanOrEqual(u.today.tokens);
     expect((await adm.patch(`/companies/${F.companyId}`, { llmDailyTokens: 5 })).status).toBe(403);
     expect((await sup.patch(`/companies/${F.companyId}`, { llmDailyTokens: 5000 })).body.llm_daily_tokens).toBe(5000);
     expect((await adm.get(`/companies/${F.companyId}/llm-usage`)).body.dailyLimit).toBe(5000);

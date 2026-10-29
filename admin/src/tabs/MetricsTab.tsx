@@ -50,7 +50,7 @@ export function MetricsTab({ companyId }: { companyId: string }) {
   // Los datos se cargan una vez; después los eventos llegan por SSE y se suman aquí, sin volver a consultar la base.
   const [live, setLive] = useState<any>(null);
   useEffect(() => setLive(m.data), [m.data]);
-  const resync = useRef<ReturnType<typeof setTimeout>>();
+  const resync = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const online = useLiveStream(
     companyId,
     (e) => {

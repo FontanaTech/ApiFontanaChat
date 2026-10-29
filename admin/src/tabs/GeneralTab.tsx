@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../api';
+import { Meter, resetText } from '../GlobalUsage';
 import { Badge, ErrorBox, Field, fmt, useAction, useLoad } from '../ui';
 
 interface SetupStep { key: string; label: string; done: boolean; required: boolean; hint: string }
@@ -11,7 +12,9 @@ interface LlmUsage {
   today: { requests: number; tokens: number };
   dailyLimit: number | null;
   globalLimit: number | null;
-  globalToday: number;
+  /** Total de todas las empresas hoy; solo lo recibe el superadmin. */
+  globalToday: number | null;
+  resetsAt: string;
   days: { day: string; requests: number; tokens: number }[];
 }
 
@@ -74,8 +77,14 @@ function LlmUsageCard({ companyId, savedLimit, isSuper, onSaved }: { companyId: 
               Has usado el {pct}% del límite diario. Al agotarse, el chat sigue funcionando pero responde con el texto de la página o pasa a un asesor, sin usar el modelo.
             </div>
           )}
-          {u.globalLimit != null && (
-            <p className="muted">Uso total de todas las empresas hoy: <strong>{num(u.globalToday)}</strong> de {num(u.globalLimit)} tokens.</p>
+          <p className="muted">{resetText(u.resetsAt)}. El conteo es por día UTC, igual que el proveedor.</p>
+          {isSuper && u.globalLimit != null && u.globalToday != null && (
+            <>
+              <p className="muted">
+                Uso general (todas las empresas): <strong>{num(u.globalToday)}</strong> de {num(u.globalLimit)} tokens · {Math.min(100, Math.round((u.globalToday / u.globalLimit) * 100))}%
+              </p>
+              <Meter small used={u.globalToday} limit={u.globalLimit} label="Uso general diario del modelo de IA" />
+            </>
           )}
 
           <form onSubmit={submit}>

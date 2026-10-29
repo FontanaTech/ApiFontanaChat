@@ -51,6 +51,7 @@ code.json { display: block; max-width: 280px; overflow: hidden; text-overflow: e
 .alert.warn { background: color-mix(in srgb, #b7791f 14%, transparent); color: #8a5a00; border: 1px solid #b7791f; padding: 8px 12px; border-radius: 8px; margin: 8px 0; }
 @media (prefers-color-scheme: dark) { .alert.warn { color: #f6c453; border-color: #d69e2e; } }
 .meter { height: 12px; background: var(--line); border-radius: 6px; overflow: hidden; margin: 6px 0 4px; }
+.meter.sm { height: 8px; }
 .meter > span { display: block; height: 100%; background: var(--primary); border-radius: 6px; }
 .meter.warn > span { background: #d69e2e; }
 .meter.full > span { background: var(--danger); }

@@ -25,7 +25,7 @@ export function RecordsTab({ companyId }: { companyId: string }) {
   // Los eventos nuevos se anteponen al llegar por SSE; las derivaciones se recargan (una consulta agrupada) porque traen asesor y cartera.
   const [fresh, setFresh] = useState<any[]>([]);
   useEffect(() => setFresh([]), [e.data]);
-  const resync = useRef<ReturnType<typeof setTimeout>>();
+  const resync = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reloadAll = () => void Promise.all([h.reload(), e.reload()]);
   const online = useLiveStream(
     companyId,

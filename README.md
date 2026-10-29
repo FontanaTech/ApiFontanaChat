@@ -15,7 +15,7 @@ Stack: Node ≥ 20, TypeScript, Express, `pg`, Zod, Argon2id (`@node-rs/argon2`)
 
 ```
 .
-├─ migrations/            SQL incremental 001..006 (+ tabla schema_migrations con checksum)
+├─ migrations/            SQL incremental 001..012 (+ tabla schema_migrations con checksum)
 ├─ docs/database.dbml     DBML actualizado (una prueba verifica que coincide con las migraciones)
 ├─ src/                   API (arquitectura MVC)
 │  ├─ config/env.ts         variables de entorno validadas con Zod

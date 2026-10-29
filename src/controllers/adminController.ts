@@ -35,6 +35,9 @@ function parseRange(query: unknown) {
   return { from, to, limit: q.limit, offset: q.offset };
 }
 
+/** Instante en que se reinicia el conteo diario del modelo (medianoche UTC del día siguiente). */
+const nextUtcMidnight = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString();
+
 export function adminController(deps: AppDeps) {
   const { db } = deps;
 
@@ -149,7 +152,32 @@ export function adminController(deps: AppDeps) {
         today: { requests: t?.requests ?? 0, tokens: t?.tokens ?? 0 },
         dailyLimit: company.llm_daily_tokens,
         globalLimit: deps.cfg.llmDailyTokenLimit > 0 ? deps.cfg.llmDailyTokenLimit : null,
-        globalToday: allToday.reduce((n, r) => n + r.tokens, 0),
+        // El total de todas las empresas solo lo ve el superadmin (es dato de las demás).
+        globalToday: req.admin!.role === 'superadmin' ? allToday.reduce((n, r) => n + r.tokens, 0) : null,
+        resetsAt: nextUtcMidnight(day),
+        days,
+      });
+    },
+    /** Uso general del modelo (todas las empresas) frente a los límites: tope general y límite de cada empresa. Solo superadmin. */
+    async llmUsageAll(_req: Request, res: Response) {
+      const day = deps.budget.today();
+      const [list, rows, days] = await Promise.all([companies.listCompanies(db), usage.usageForDay(db, day), usage.usageHistoryAll(db, 14)]);
+      const byCompany = new Map(rows.map((r) => [r.company_id, r]));
+      res.json({
+        enabled: deps.cfg.llmEnabled,
+        provider: deps.cfg.llmProvider,
+        model: deps.cfg.llmProvider === 'openai' ? deps.cfg.llmModel : deps.cfg.ollamaModel,
+        day,
+        resetsAt: nextUtcMidnight(day),
+        global: {
+          tokens: rows.reduce((n, r) => n + r.tokens, 0),
+          requests: rows.reduce((n, r) => n + r.requests, 0),
+          limit: deps.cfg.llmDailyTokenLimit > 0 ? deps.cfg.llmDailyTokenLimit : null,
+        },
+        companies: list.map((c) => ({
+          id: c.id, slug: c.slug, name: c.name,
+          tokens: byCompany.get(c.id)?.tokens ?? 0, requests: byCompany.get(c.id)?.requests ?? 0, limit: c.llm_daily_tokens,
+        })),
         days,
       });
     },

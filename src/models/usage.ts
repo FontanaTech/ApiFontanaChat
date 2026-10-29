@@ -15,9 +15,22 @@ export async function addUsage(q: Queryable, companyId: string, day: string, tok
   );
 }
 
-/** Tokens consumidos en un día por cada empresa (todas). */
-export async function usageForDay(q: Queryable, day: string): Promise<Array<{ company_id: string; tokens: number }>> {
-  return (await q.query<{ company_id: string; tokens: number }>('SELECT company_id, tokens FROM llm_usage WHERE day = $1::date', [day])).rows;
+/** Solicitudes y tokens consumidos en un día por cada empresa (todas). */
+export async function usageForDay(q: Queryable, day: string): Promise<Array<{ company_id: string; requests: number; tokens: number }>> {
+  return (
+    await q.query<{ company_id: string; requests: number; tokens: number }>('SELECT company_id, requests, tokens FROM llm_usage WHERE day = $1::date', [day])
+  ).rows;
+}
+
+/** Consumo diario sumando todas las empresas, el más reciente primero. */
+export async function usageHistoryAll(q: Queryable, days = 14): Promise<UsageDay[]> {
+  return (
+    await q.query<UsageDay>(
+      `SELECT to_char(day, 'YYYY-MM-DD') AS day, sum(requests)::int AS requests, sum(tokens)::int AS tokens FROM llm_usage
+       GROUP BY day ORDER BY day DESC LIMIT $1`,
+      [days],
+    )
+  ).rows;
 }
 
 /** Últimos días de consumo de una empresa, el más reciente primero. */
