@@ -14,10 +14,6 @@ Table companies {
   content_error text
   rr_cursor integer [not null, default: 0, note: 'turno del round robin entre asesores']
   llm_daily_tokens integer [note: 'limite diario de tokens del modelo para esta empresa; NULL = sin limite propio']
-  webhook_url text [note: 'webhook de salida (https); NULL = desactivado']
-  webhook_secret text [note: 'secreto de firma HMAC; nunca se devuelve por la API']
-  webhook_status text [note: 'resultado del ultimo envio']
-  webhook_last_at timestamptz
   created_at timestamptz
   updated_at timestamptz
 }

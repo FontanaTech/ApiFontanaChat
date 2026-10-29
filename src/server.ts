@@ -5,6 +5,7 @@ import { createContentFetcher } from './services/contentSync';
 import { listCompanies } from './models/companies';
 import { warmUpChat } from './services/chat';
 import { createLlmClient } from './services/llm';
+import type { LiveBus } from './services/liveEvents';
 
 let cfg: ReturnType<typeof loadConfig>;
 let db: ReturnType<typeof createPgDb>;
@@ -42,6 +43,7 @@ async function warmUp() {
 
 async function shutdown(signal: string) {
   console.log(`${signal} recibido, cerrando...`);
+  (app.locals.live as LiveBus).closeAll(); // las conexiones SSE abiertas impedirían cerrar el servidor
   server.close(async () => {
     await db.close().catch(() => undefined);
     process.exit(0);

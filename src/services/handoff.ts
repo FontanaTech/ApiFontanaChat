@@ -5,7 +5,7 @@ import { getButtonByKey } from '../models/catalog';
 import { getDefaultPortfolio, getPortfolioByKey } from '../models/portfolios';
 import { findHandoffByKey, insertEvent, insertHandoff, type Handoff, type PublicSession } from '../models/public';
 import { assignRecipient, type Recipient, type RecipientFilter } from './assignment';
-import type { WebhookNotify } from './webhook';
+import type { LiveNotify } from './liveEvents';
 
 export interface HandoffInput {
   /** Opcional: un botón con asesor fijo lo respeta; con cartera usa esa cartera; sin nada, la cartera por defecto. */
@@ -39,7 +39,7 @@ export interface HandoffResult {
  * Consulta el teléfono vigente en la base en el momento de la llamada; nunca usa datos del cliente.
  */
 export async function createHandoff(
-  db: Db, company: Company, session: PublicSession, input: HandoffInput, notify?: WebhookNotify,
+  db: Db, company: Company, session: PublicSession, input: HandoffInput, notify?: LiveNotify,
 ): Promise<HandoffResult> {
   const out = await db.tx(async (q) => {
     // Serializa solicitudes concurrentes de la misma sesión (evita doble asignación con la misma clave).
@@ -106,9 +106,7 @@ export async function createHandoff(
     });
     return { handoff, replayed: false, advisorName: recipient.advisorName };
   });
-  // Ya confirmada la transacción: aviso en vivo (sin el número del asesor).
-  if (!out.replayed) {
-    notify?.(company, 'handoff_created', { handoffId: out.handoff.id, advisorName: out.advisorName, portfolioId: out.handoff.portfolio_id, reason: out.handoff.reason || null });
-  }
+  // Ya confirmada la transacción: aviso en vivo al panel.
+  if (!out.replayed) notify?.(company.id, 'handoff_created', { handoffId: out.handoff.id });
   return out;
 }

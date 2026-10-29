@@ -38,9 +38,6 @@ export const updateCompanyBody = z
     contentUrl: z.string().trim().url().max(500).nullable().optional(),
     // Solo superadmin: reparte la cuota diaria de tokens del modelo entre las empresas (null = sin límite propio).
     llmDailyTokens: z.number().int().min(0).max(1_000_000_000).nullable().optional(),
-    // Solo superadmin: webhook de salida (null lo desactiva) y regeneración de su secreto de firma.
-    webhookUrl: z.string().trim().url().max(500).nullable().optional(),
-    regenerateWebhookSecret: z.literal(true).optional(),
   })
   .strict();
 

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { ErrorBox, Field, LiveBadge, fmt, useLive, useLoad } from '../ui';
+import { ErrorBox, Field, LiveBadge, fmt, useBackupReload, useLiveStream, useLoad } from '../ui';
 
 const DEVICES: Record<string, string> = { desktop: 'Computador', mobile: 'Celular', tablet: 'Tableta', bot: 'Bot' };
 
@@ -22,10 +22,30 @@ export function RecordsTab({ companyId }: { companyId: string }) {
   const h = useLoad(() => api<{ items: any[] }>('GET', `/companies/${companyId}/handoffs${qs}`), [companyId, from, to]);
   const e = useLoad(() => api<{ items: any[] }>('GET', `/companies/${companyId}/events${qs}`), [companyId, from, to]);
 
-  useLive(() => Promise.all([h.reload(), e.reload()]));
+  // Los eventos nuevos se anteponen al llegar por SSE; las derivaciones se recargan (una consulta agrupada) porque traen asesor y cartera.
+  const [fresh, setFresh] = useState<any[]>([]);
+  useEffect(() => setFresh([]), [e.data]);
+  const resync = useRef<ReturnType<typeof setTimeout>>();
+  const reloadAll = () => void Promise.all([h.reload(), e.reload()]);
+  const online = useLiveStream(
+    companyId,
+    (ev) => {
+      setFresh((cur) => [
+        { id: `live-${ev.at}-${cur.length}`, created_at: ev.at, type: ev.type, is_visit: ev.data.isVisit, page_path: ev.data.path ?? null, button_label: ev.data.button ?? null, device: ev.data.device, browser: ev.data.browser, os: ev.data.os },
+        ...cur,
+      ].slice(0, 100));
+      if (ev.type === 'handoff_created' || ev.type === 'whatsapp_click') {
+        clearTimeout(resync.current);
+        resync.current = setTimeout(() => void h.reload(), 2000);
+      }
+    },
+    reloadAll,
+  );
+  useBackupReload(reloadAll);
+  const eventRows = [...fresh, ...(e.data?.items ?? [])].slice(0, 100);
   return (
     <>
-      <DateRange from={from} to={to} setFrom={setFrom} setTo={setTo} /> <LiveBadge />
+      <DateRange from={from} to={to} setFrom={setFrom} setTo={setTo} /> <LiveBadge online={online} />
       <ErrorBox msg={h.error || e.error} />
       <div className="card">
         <h2>Derivaciones a WhatsApp</h2>
@@ -48,7 +68,7 @@ export function RecordsTab({ companyId }: { companyId: string }) {
         <table>
           <thead><tr><th>Fecha</th><th>Tipo</th><th>Página</th><th>Botón</th><th>Dispositivo</th><th>Navegador</th></tr></thead>
           <tbody>
-            {e.data?.items.map((r) => (
+            {eventRows.map((r) => (
               <tr key={r.id}><td>{fmt(r.created_at)}</td><td>{r.type === 'page_view' && r.is_visit ? 'Ingreso' : r.type}</td><td>{r.page_path ?? '—'}</td><td>{r.button_label ?? '—'}</td><td>{DEVICES[r.device] ?? r.device ?? '—'}</td><td>{r.browser ? `${r.browser} · ${r.os}` : '—'}</td></tr>
             ))}
           </tbody>

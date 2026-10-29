@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 export function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);
@@ -22,22 +22,85 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
   return { data, error, loading, reload };
 }
 
-/** Actualiza los datos en vivo: vuelve a consultar cada `ms` mientras la pestaña esté visible (y al volver a ella). */
-export function useLive(reload: () => void | Promise<void>, ms = 15000) {
+/** Evento que el servidor empuja al panel (ver /companies/:id/live). */
+export interface LiveEvent {
+  type: 'page_view' | 'chat_open' | 'button_click' | 'handoff_created' | 'whatsapp_click';
+  at: string;
+  data: Record<string, any>;
+}
+const LIVE_TYPES: LiveEvent['type'][] = ['page_view', 'chat_open', 'button_click', 'handoff_created', 'whatsapp_click'];
+
+/**
+ * Datos en vivo sin consultar la base: abre un canal SSE con la API y entrega cada evento a `onEvent`.
+ * Se pausa con la pestaña oculta y, al reconectar o volver a verla, llama a `onResync` (una sola recarga que corrige lo que se haya perdido).
+ * Devuelve si el canal está conectado.
+ */
+export function useLiveStream(companyId: string, onEvent: (e: LiveEvent) => void, onResync: () => void): boolean {
+  const handlers = useRef({ onEvent, onResync });
+  handlers.current = { onEvent, onResync };
+  const [online, setOnline] = useState(false);
   useEffect(() => {
-    const tick = () => {
-      if (document.visibilityState === 'visible') void reload();
+    if (typeof EventSource === 'undefined') return;
+    let es: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let everOpened = false;
+    const close = () => {
+      clearTimeout(retry);
+      es?.close();
+      es = null;
+      setOnline(false);
     };
-    const timer = setInterval(tick, ms);
-    document.addEventListener('visibilitychange', tick);
+    const connect = () => {
+      close();
+      es = new EventSource(`/api/v1/admin/companies/${companyId}/live`, { withCredentials: true });
+      es.onopen = () => {
+        setOnline(true);
+        if (everOpened) handlers.current.onResync();
+        everOpened = true;
+      };
+      es.onerror = () => {
+        setOnline(false);
+        // El navegador reintenta solo si la conexión se cayó; si el servidor la rechazó (CLOSED) se reintenta a mano.
+        if (es?.readyState === EventSource.CLOSED) {
+          es.close();
+          es = null;
+          retry = setTimeout(connect, 5000);
+        }
+      };
+      for (const t of LIVE_TYPES) es.addEventListener(t, (m) => handlers.current.onEvent(JSON.parse((m as MessageEvent).data)));
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') close();
+      else {
+        connect();
+        handlers.current.onResync();
+      }
+    };
+    if (document.visibilityState === 'visible') connect();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', tick);
+      document.removeEventListener('visibilitychange', onVisibility);
+      close();
     };
-  }, [reload, ms]);
+  }, [companyId]);
+  return online;
 }
 
-export const LiveBadge = () => <span className="live" title="Se actualiza solo cada 15 segundos">● En vivo</span>;
+/** Recarga de respaldo poco frecuente (el flujo en vivo ya mantiene los datos al día). */
+export function useBackupReload(reload: () => void | Promise<void>, ms = 300_000) {
+  const latest = useRef(reload);
+  latest.current = reload; // la recarga más reciente, sin reiniciar el temporizador en cada render
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void latest.current();
+    }, ms);
+    return () => clearInterval(timer);
+  }, [ms]);
+}
+
+export const LiveBadge = ({ online }: { online: boolean }) => (
+  <span className={online ? 'live' : 'live off'} title="Los eventos llegan al instante, sin consultar la base de datos">{online ? '● En vivo' : '○ Reconectando…'}</span>
+);
 
 export const ErrorBox = ({ msg }: { msg: string }) => (msg ? <div className="alert error" role="alert">{msg}</div> : null);
 

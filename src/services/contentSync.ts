@@ -42,7 +42,7 @@ export function validateContentUrl(raw: string, allowedOrigins: string[], allowL
   return url;
 }
 
-/** Conexiones salientes que verifican la IP resuelta (anti-SSRF / DNS rebinding). Las usan la sincronización y el webhook. */
+/** Conexiones salientes que verifican la IP resuelta (anti-SSRF / DNS rebinding). La usa la sincronización de contenido. */
 export function safeDispatcher(allowLocal: boolean): Agent {
   return new Agent({
     connect: {

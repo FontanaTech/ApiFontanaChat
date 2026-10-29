@@ -17,7 +17,7 @@ import { syncCompanyContent } from '../services/contentSync';
 import { eligibleRecipients } from '../services/assignment';
 import { warmUpChat } from '../services/chat';
 import { getCompanyContent } from '../models/companies';
-import { generateWebhookSecret, validateWebhookUrl } from '../services/webhook';
+import { HttpError } from '../utils/errors';
 
 function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
@@ -113,35 +113,14 @@ export function adminController(deps: AppDeps) {
     },
     async updateCompany(req: Request, res: Response) {
       const b = parse(v.updateCompanyBody, req.body);
-      const webhookChange = b.webhookUrl !== undefined || b.regenerateWebhookSecret !== undefined;
-      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined || b.llmDailyTokens !== undefined || webhookChange)) {
-        throw forbidden('Solo un superadmin puede cambiar el slug, el estado, el límite de IA ni el webhook de la empresa');
+      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined || b.llmDailyTokens !== undefined)) {
+        throw forbidden('Solo un superadmin puede cambiar el slug, el estado o el límite de IA de la empresa');
       }
-      let webhookSecret: string | undefined; // solo se devuelve en el momento en que se genera
-      let webhookUrl: string | null | undefined;
-      if (b.webhookUrl) {
-        try {
-          webhookUrl = validateWebhookUrl(b.webhookUrl, deps.cfg.allowLocalContentUrls);
-        } catch (e: any) {
-          throw badRequest(e.message);
-        }
-      }
-      const c = await audited(req, { companyId: cid(req), entity: 'company', action: b.active === false ? 'deactivate' : 'update' }, async (q) => {
-        const before = must(await companies.getCompany(q, cid(req)));
-        let after = must(await companies.updateCompany(q, cid(req), b));
-        if (webhookChange) {
-          const url = b.webhookUrl === undefined ? before.webhook_url : (webhookUrl ?? null);
-          if (!url) {
-            if (b.regenerateWebhookSecret) throw badRequest('Primero configura la URL del webhook');
-            after = must(await companies.setWebhook(q, cid(req), { url: null }));
-          } else {
-            if (!before.webhook_secret_set || b.regenerateWebhookSecret) webhookSecret = generateWebhookSecret();
-            after = must(await companies.setWebhook(q, cid(req), { url, secret: webhookSecret }));
-          }
-        }
-        return { before, after };
-      });
-      res.json(webhookSecret ? { ...c, webhookSecret } : c);
+      const c = await audited(req, { companyId: cid(req), entity: 'company', action: b.active === false ? 'deactivate' : 'update' }, async (q) => ({
+        before: must(await companies.getCompany(q, cid(req))),
+        after: must(await companies.updateCompany(q, cid(req), b)),
+      }));
+      res.json(c);
     },
     async syncContent(req: Request, res: Response) {
       const company = must(await companies.getCompany(db, cid(req)));
@@ -174,13 +153,32 @@ export function adminController(deps: AppDeps) {
         days,
       });
     },
-    /** Envía un evento `test` firmado al webhook de la empresa y devuelve el resultado. */
-    async testWebhook(req: Request, res: Response) {
-      if (req.admin!.role !== 'superadmin') throw forbidden('Solo un superadmin puede probar el webhook');
-      const company = must(await companies.getCompany(db, cid(req)));
-      if (!company.webhook_url) throw badRequest('La empresa no tiene un webhook configurado');
-      const r = await deps.webhook.test(company);
-      res.status(r.ok ? 200 : 422).json(r);
+    /**
+     * Canal de eventos en vivo (Server-Sent Events) de una empresa: el panel carga los datos una vez y luego recibe los eventos
+     * al instante, sin consultar la base. Requiere sesión de administrador con acceso a la empresa (ya validado por la ruta).
+     */
+    async live(req: Request, res: Response) {
+      const MAX_AGE_MS = 30 * 60_000; // se cierra solo y el panel reconecta: así una sesión revocada no queda escuchando
+      const unsub = deps.live.subscribe(cid(req), {
+        send: (e) => void res.write(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`),
+        close: () => void res.end(),
+      });
+      if (!unsub) throw new HttpError(503, 'live_capacity', 'Demasiadas conexiones en vivo; vuelve a intentarlo en un momento');
+      res.status(200).set({
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no', // el proxy no debe retener los eventos
+      });
+      res.flushHeaders();
+      res.write('retry: 3000\n: conectado\n\n');
+      const ping = setInterval(() => res.write(': ping\n\n'), 25_000); // evita que el proxy cierre la conexión inactiva
+      const stop = setTimeout(() => res.end(), MAX_AGE_MS);
+      res.on('close', () => {
+        clearInterval(ping);
+        clearTimeout(stop);
+        unsub();
+      });
     },
     async contentSummary(req: Request, res: Response) {
       const json = (await getCompanyContent(db, cid(req))) as v.ChatbotContent | null;

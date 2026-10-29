@@ -7,20 +7,15 @@ import { errorHandler, limiter, notFoundHandler } from './middleware/security';
 import { adminRouter, publicRouter } from './routes';
 import { createLlmBudget } from './services/llmBudget';
 import { createPublicCache } from './services/publicCache';
-import { createWebhookPoster, createWebhookService, type WebhookPoster } from './services/webhook';
+import { createLiveBus } from './services/liveEvents';
 
 export const ADMIN_DIST = path.resolve(__dirname, '..', 'admin', 'dist');
 
-export function createApp(input: Omit<AppDeps, 'cache' | 'budget' | 'webhook'> & { webhookPoster?: WebhookPoster }) {
-  const { webhookPoster, ...rest } = input;
-  const deps: AppDeps = {
-    ...rest,
-    cache: createPublicCache(input.cfg),
-    budget: createLlmBudget(input.db, input.cfg),
-    webhook: createWebhookService(input.db, webhookPoster ?? createWebhookPoster(input.cfg)),
-  };
+export function createApp(input: Omit<AppDeps, 'cache' | 'budget' | 'live'>) {
+  const deps: AppDeps = { ...input, cache: createPublicCache(input.cfg), budget: createLlmBudget(input.db, input.cfg), live: createLiveBus() };
   const { cfg, db } = deps;
   const app = express();
+  app.locals.live = deps.live; // el apagado ordenado cierra los canales en vivo (ver server.ts)
   app.disable('x-powered-by');
   app.set('trust proxy', cfg.trustProxy);
   app.use(

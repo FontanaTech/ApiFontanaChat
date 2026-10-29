@@ -80,18 +80,14 @@ export function publicController(deps: AppDeps) {
       const { isVisit } = await insertEvent(deps.db, {
         companyId: company.id, sessionId: session!.id, type: body.type, buttonId, pagePath: path, visitorHash: trackedVisitor(session!),
       });
-      // Webhook en vivo: un ingreso real (no cada cambio de vista), la apertura del chat y los clics en botones.
-      if (isVisit) {
-        deps.webhook.notify(company, 'visit', { path, origin: session!.origin, browser: session!.browser, os: session!.os, device: session!.device, visitor: session!.visitor_hash?.slice(0, 12) });
-      } else if (body.type !== 'page_view') {
-        deps.webhook.notify(company, body.type, { path, button: body.buttonKey ?? null });
-      }
+      // Al panel abierto, en vivo (en memoria: no consulta la base).
+      deps.live.publish(company.id, body.type, { path, isVisit, button: body.buttonKey ?? null, device: session!.device, browser: session!.browser, os: session!.os });
       res.status(202).json({ ok: true });
     },
 
     async chat(req: Request, res: Response) {
       const body = parse(chatBody, req.body);
-      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget, notify: deps.webhook.notify }, req.pub!.company, req.pub!.session!, body.message, body.history);
+      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget, notify: deps.live.publish }, req.pub!.company, req.pub!.session!, body.message, body.history);
       res.json(reply);
     },
 
@@ -105,7 +101,7 @@ export function publicController(deps: AppDeps) {
       const { company, session } = req.pub!;
       const r = await createHandoff(deps.db, company, session!, {
         buttonKey: body.buttonKey, portfolioKey: body.portfolioKey, name: body.name, reason: body.reason, idempotencyKey: key,
-      }, deps.webhook.notify);
+      }, deps.live.publish);
       res.status(r.replayed ? 200 : 201).json({
         handoffId: r.handoff.id,
         replayed: r.replayed,
@@ -125,7 +121,7 @@ export function publicController(deps: AppDeps) {
       const first = await markWhatsappClicked(deps.db, company.id, h.id);
       if (first) {
         await insertEvent(deps.db, { companyId: company.id, sessionId: session!.id, type: 'whatsapp_click', buttonId: h.button_id, handoffId: h.id, visitorHash: trackedVisitor(session!) });
-        deps.webhook.notify(company, 'whatsapp_click', { handoffId: h.id });
+        deps.live.publish(company.id, 'whatsapp_click', { handoffId: h.id });
       }
       res.status(202).json({ ok: true });
     },

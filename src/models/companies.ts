@@ -12,17 +12,12 @@ export interface Company {
   content_error: string | null;
   /** Límite diario de tokens del modelo para esta empresa; null = sin límite propio. */
   llm_daily_tokens: number | null;
-  /** Webhook de salida (la URL se muestra; el secreto nunca sale de la base de datos salvo para firmar). */
-  webhook_url: string | null;
-  webhook_status: string | null;
-  webhook_last_at: string | null;
-  webhook_secret_set: boolean;
   created_at: string;
   updated_at: string;
 }
 
 const COLS =
-  'id, slug, name, active, content_url, content_hash, content_synced_at, content_status, content_error, llm_daily_tokens, webhook_url, webhook_status, webhook_last_at, (webhook_secret IS NOT NULL) AS webhook_secret_set, created_at, updated_at';
+  'id, slug, name, active, content_url, content_hash, content_synced_at, content_status, content_error, llm_daily_tokens, created_at, updated_at';
 
 export async function listCompanies(q: Queryable, onlyId?: string): Promise<Company[]> {
   const r = onlyId
@@ -74,32 +69,6 @@ export async function updateCompany(
     [id, d.name ?? null, d.slug ?? null, d.active ?? null, d.contentUrl !== undefined, d.contentUrl ?? null, d.llmDailyTokens !== undefined, d.llmDailyTokens ?? null],
   );
   return r.rows[0] ?? null;
-}
-
-export async function getWebhookSecret(q: Queryable, id: string): Promise<string | null> {
-  const r = await q.query<{ webhook_secret: string | null }>('SELECT webhook_secret FROM companies WHERE id = $1', [id]);
-  return r.rows[0]?.webhook_secret ?? null;
-}
-
-/** `url: null` desactiva el webhook y borra secreto y estado; `secret` solo se cambia si se envía. */
-export async function setWebhook(q: Queryable, id: string, d: { url: string | null; secret?: string }): Promise<Company | null> {
-  const r = await q.query<Company>(
-    `UPDATE companies SET
-       webhook_url = $2,
-       webhook_secret = CASE WHEN $2::text IS NULL THEN NULL WHEN $3::text IS NOT NULL THEN $3 ELSE webhook_secret END,
-       webhook_status = NULL, webhook_last_at = NULL, updated_at = now()
-     WHERE id = $1 RETURNING ${COLS}`,
-    [id, d.url, d.secret ?? null],
-  );
-  return r.rows[0] ?? null;
-}
-
-/** Solo escribe si el estado cambió (no hay una escritura por cada evento entregado). */
-export async function recordWebhookStatus(q: Queryable, id: string, status: string): Promise<void> {
-  await q.query(
-    'UPDATE companies SET webhook_status = $2, webhook_last_at = now() WHERE id = $1 AND webhook_status IS DISTINCT FROM $2',
-    [id, status],
-  );
 }
 
 export async function saveContentResult(

@@ -9,7 +9,7 @@ import type { PublicSession } from '../models/public';
 import { HttpError } from '../utils/errors';
 import { findPortfolioByText } from '../models/portfolios';
 import { createHandoff } from './handoff';
-import type { WebhookNotify } from './webhook';
+import type { LiveNotify } from './liveEvents';
 import type { LlmBudget } from './llmBudget';
 import { LlmUnavailableError, type LlmClient, type LlmMessage, type LlmMeta } from './ollama';
 
@@ -401,8 +401,8 @@ export interface ChatDeps {
   fastScore: number;
   /** Límite diario de tokens (por empresa y global); sin él no hay control de consumo. */
   budget?: LlmBudget;
-  /** Aviso en vivo (webhook) de las derivaciones que crea el chat. */
-  notify?: WebhookNotify;
+  /** Aviso en vivo al panel de las derivaciones que crea el chat. */
+  notify?: LiveNotify;
 }
 
 /** Respuestas ya generadas por pregunta, válidas mientras no cambie el contenido sincronizado (hash en la clave). */

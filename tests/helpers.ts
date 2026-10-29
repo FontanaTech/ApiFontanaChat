@@ -10,7 +10,6 @@ import { hashPassword } from '../src/services/password';
 import type { ContentFetcher } from '../src/services/contentSync';
 import type { LlmClient, LlmMessage } from '../src/services/ollama';
 import { LlmUnavailableError } from '../src/services/ollama';
-import type { WebhookPoster } from '../src/services/webhook';
 
 /** Base Postgres real (PGlite) en memoria; aplica las mismas migraciones SQL que Neon. */
 export async function createTestDb(): Promise<Db> {
@@ -42,8 +41,6 @@ export interface TestEnv {
   cfg: Config;
   llm: { impl: (m: LlmMessage[]) => Promise<string>; calls: LlmMessage[][]; tokens: number };
   fetcher: { impl: ContentFetcher; calls: string[] };
-  /** Webhook de salida simulado: guarda cada POST y responde con `status` (o lanza si `fail`). */
-  webhook: { calls: { url: string; headers: Record<string, string>; body: any; raw: string }[]; status: number; fail: boolean };
 }
 
 export async function createEnv(overrides: Partial<Config> = {}): Promise<TestEnv> {
@@ -68,20 +65,14 @@ export async function createEnv(overrides: Partial<Config> = {}): Promise<TestEn
       return out;
     },
   };
-  const webhook: TestEnv['webhook'] = { calls: [], status: 200, fail: false };
-  const deps: Omit<AppDeps, 'cache' | 'budget' | 'webhook'> & { webhookPoster: WebhookPoster } = {
+  const deps: Omit<AppDeps, 'cache' | 'budget' | 'live'> = {
     cfg, db, llm: llmClient,
-    webhookPoster: async (url, headers, raw) => {
-      if (webhook.fail) throw new Error('sin conexión');
-      webhook.calls.push({ url, headers, body: JSON.parse(raw), raw });
-      return webhook.status;
-    },
     contentFetcher: (url) => {
       fetcher.calls.push(url);
       return fetcher.impl(url);
     },
   };
-  return { db, app: createApp(deps), cfg, llm, fetcher, webhook };
+  return { db, app: createApp(deps), cfg, llm, fetcher };
 }
 
 export interface AdminSession {

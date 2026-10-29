@@ -23,7 +23,7 @@ input[type=color] { padding: 2px; height: 34px; width: 56px; } input[type=checkb
 button { cursor: pointer; margin-right: 6px; } button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
 
-.live { color: var(--primary); font-size: .85rem; margin-left: 8px; }
+.live { color: var(--primary); font-size: .85rem; margin-left: 8px; } .live.off { color: var(--muted); }
 button.danger { color: var(--danger); border-color: var(--danger); }
 button.link { border: 0; background: none; color: var(--primary); padding: 4px 6px; }
 .inline { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-top: 8px; }
