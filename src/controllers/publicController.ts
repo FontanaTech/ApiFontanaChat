@@ -10,12 +10,16 @@ import { createSessionBody, eventBody, handoffBody } from '../validation/schemas
 import { eligibleRecipients } from '../services/assignment';
 import { answerChat } from '../services/chat';
 import { createHandoff } from '../services/handoff';
+import { parseUserAgent, visitorHash } from '../utils/userAgent';
 
 function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
   if (!r.success) throw badRequest('Datos inválidos', r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
   return r.data;
 }
+
+/** Los bots y las sesiones antiguas no cuentan como visitantes. */
+const trackedVisitor = (s: { visitor_hash: string | null; device: string | null }) => (s.device === 'bot' ? null : s.visitor_hash);
 
 export function publicController(deps: AppDeps) {
   const chatBody = z.object({
@@ -32,9 +36,13 @@ export function publicController(deps: AppDeps) {
       const { company, origin } = req.pub!;
       const token = randomToken();
       const expiresAt = new Date(Date.now() + deps.cfg.publicSessionTtlMs);
+      // Visitante = IP + navegador (huella irreversible; la IP no se guarda), para contar ingresos reales y no vistas.
+      const ua = req.get('user-agent');
+      const client = parseUserAgent(ua);
       const s = await createPublicSession(deps.db, {
         companyId: company.id, tokenHash: hashToken(deps.cfg.sessionSecret, token), origin,
         pagePath: body.pagePath ?? '/', expiresAt,
+        visitorHash: visitorHash(deps.cfg.sessionSecret, company.id, req.ip ?? '', ua), ...client,
       });
       res.status(201).json({ token, expiresAt: s.expires_at, company: { slug: company.slug, name: company.name } });
     },
@@ -68,13 +76,22 @@ export function publicController(deps: AppDeps) {
         if (!b || !b.active) throw badRequest('Botón inexistente');
         buttonId = b.id;
       }
-      await insertEvent(deps.db, { companyId: company.id, sessionId: session!.id, type: body.type, buttonId, pagePath: body.path ?? session!.page_path });
+      const path = body.path ?? session!.page_path;
+      const { isVisit } = await insertEvent(deps.db, {
+        companyId: company.id, sessionId: session!.id, type: body.type, buttonId, pagePath: path, visitorHash: trackedVisitor(session!),
+      });
+      // Webhook en vivo: un ingreso real (no cada cambio de vista), la apertura del chat y los clics en botones.
+      if (isVisit) {
+        deps.webhook.notify(company, 'visit', { path, origin: session!.origin, browser: session!.browser, os: session!.os, device: session!.device, visitor: session!.visitor_hash?.slice(0, 12) });
+      } else if (body.type !== 'page_view') {
+        deps.webhook.notify(company, body.type, { path, button: body.buttonKey ?? null });
+      }
       res.status(202).json({ ok: true });
     },
 
     async chat(req: Request, res: Response) {
       const body = parse(chatBody, req.body);
-      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget }, req.pub!.company, req.pub!.session!, body.message, body.history);
+      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget, notify: deps.webhook.notify }, req.pub!.company, req.pub!.session!, body.message, body.history);
       res.json(reply);
     },
 
@@ -88,7 +105,7 @@ export function publicController(deps: AppDeps) {
       const { company, session } = req.pub!;
       const r = await createHandoff(deps.db, company, session!, {
         buttonKey: body.buttonKey, portfolioKey: body.portfolioKey, name: body.name, reason: body.reason, idempotencyKey: key,
-      });
+      }, deps.webhook.notify);
       res.status(r.replayed ? 200 : 201).json({
         handoffId: r.handoff.id,
         replayed: r.replayed,
@@ -106,7 +123,10 @@ export function publicController(deps: AppDeps) {
       const h = await getHandoffForSession(deps.db, company.id, session!.id, id);
       if (!h) throw notFound('Derivación no encontrada');
       const first = await markWhatsappClicked(deps.db, company.id, h.id);
-      if (first) await insertEvent(deps.db, { companyId: company.id, sessionId: session!.id, type: 'whatsapp_click', buttonId: h.button_id, handoffId: h.id });
+      if (first) {
+        await insertEvent(deps.db, { companyId: company.id, sessionId: session!.id, type: 'whatsapp_click', buttonId: h.button_id, handoffId: h.id, visitorHash: trackedVisitor(session!) });
+        deps.webhook.notify(company, 'whatsapp_click', { handoffId: h.id });
+      }
       res.status(202).json({ ok: true });
     },
   };

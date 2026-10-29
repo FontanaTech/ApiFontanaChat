@@ -17,6 +17,59 @@ interface LlmUsage {
 
 const num = (n: number) => n.toLocaleString('es');
 
+/** Webhook de salida: el servidor avisa a una URL de la empresa, en vivo, cada vez que ocurre un evento. Solo superadmin. */
+function WebhookCard({ company, reload }: { company: any; reload: () => void }) {
+  const base = `/companies/${company.id}`;
+  const [url, setUrl] = useState<string>(company.webhook_url ?? '');
+  const [secret, setSecret] = useState('');
+  const [testMsg, setTestMsg] = useState('');
+  useEffect(() => setUrl(company.webhook_url ?? ''), [company.webhook_url]);
+  const act = useAction(reload);
+  const patch = async (body: object) => {
+    setTestMsg('');
+    await act.run(async () => {
+      const r = await api<{ webhookSecret?: string }>('PATCH', base, body);
+      if (r.webhookSecret) setSecret(r.webhookSecret); // se muestra una sola vez
+    });
+  };
+  const test = useAction();
+  const active = !!company.webhook_url;
+  return (
+    <div className="card">
+      <h2>Webhook en vivo</h2>
+      <p className="muted">
+        El servidor envía un POST firmado a esta URL cuando hay un <code>visit</code> (ingreso real), <code>chat_open</code>, <code>button_click</code>, <code>handoff_created</code> o <code>whatsapp_click</code>.
+        No se envían los cambios de vista ni los teléfonos de los asesores.
+      </p>
+      <form onSubmit={(e) => { e.preventDefault(); void patch({ webhookUrl: url.trim() || null }); }}>
+        <Field label="URL del webhook (https)"><input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://tu-sistema.com/hooks/fontanachat" /></Field>
+        <button className="primary" disabled={act.busy}>{active ? 'Guardar' : 'Activar webhook'}</button>
+        {active && <button type="button" className="danger" onClick={() => { if (window.confirm('¿Desactivar el webhook? Se borrará también su secreto.')) { setSecret(''); void patch({ webhookUrl: null }); } }}>Desactivar</button>}
+      </form>
+      <ErrorBox msg={act.error} />
+      {secret && (
+        <div className="alert" role="status">
+          <strong>Secreto de firma (cópialo ahora; no se vuelve a mostrar):</strong>
+          <p><code>{secret}</code></p>
+          <small>Cada envío trae <code>X-Fontanachat-Signature: sha256=HMAC(secreto, timestamp + "." + cuerpo)</code> y <code>X-Fontanachat-Timestamp</code>. Verifícalos antes de confiar en el mensaje.</small>
+        </div>
+      )}
+      {active && (
+        <>
+          <p>
+            Último estado: <strong>{company.webhook_status ?? 'sin envíos todavía'}</strong>
+            {company.webhook_last_at ? <> · {fmt(company.webhook_last_at)}</> : null}
+          </p>
+          <button disabled={test.busy} onClick={async () => { setTestMsg(''); const ok = await test.run(async () => { const r = await api('POST', `${base}/webhook/test`, {}); setTestMsg(`Prueba enviada: el destino respondió HTTP ${r.status}.`); }); if (ok) reload(); }}>{test.busy ? 'Enviando…' : 'Enviar prueba'}</button>
+          <button onClick={() => { if (window.confirm('¿Generar un secreto nuevo? El anterior dejará de ser válido y debes actualizarlo en el receptor.')) void patch({ regenerateWebhookSecret: true }); }}>Regenerar secreto</button>
+          {testMsg && <p role="status">{testMsg}</p>}
+          <ErrorBox msg={test.error} />
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Consumo diario del modelo de IA y límite propio de la empresa. */
 function LlmUsageCard({ companyId, savedLimit, isSuper, onSaved }: { companyId: string; savedLimit: number | null; isSuper: boolean; onSaved: () => void }) {
   const [tick, setTick] = useState(0);
@@ -181,6 +234,8 @@ export function GeneralTab({ company, isSuper, reload }: { company: any; isSuper
       </form>
 
       <LlmUsageCard companyId={company.id} savedLimit={company.llm_daily_tokens ?? null} isSuper={isSuper} onSaved={reload} />
+
+      {isSuper && <WebhookCard company={company} reload={reload} />}
 
       <div className="card">
         <h2>Contenido del chatbot</h2>

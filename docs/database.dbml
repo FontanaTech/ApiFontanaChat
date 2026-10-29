@@ -14,6 +14,10 @@ Table companies {
   content_error text
   rr_cursor integer [not null, default: 0, note: 'turno del round robin entre asesores']
   llm_daily_tokens integer [note: 'limite diario de tokens del modelo para esta empresa; NULL = sin limite propio']
+  webhook_url text [note: 'webhook de salida (https); NULL = desactivado']
+  webhook_secret text [note: 'secreto de firma HMAC; nunca se devuelve por la API']
+  webhook_status text [note: 'resultado del ultimo envio']
+  webhook_last_at timestamptz
   created_at timestamptz
   updated_at timestamptz
 }
@@ -114,6 +118,10 @@ Table public_sessions {
   token_hash text [unique, not null]
   origin text [not null]
   page_path text [not null]
+  visitor_hash text [note: 'HMAC(IP + user-agent) por empresa; la IP no se guarda']
+  browser text
+  os text
+  device text [note: 'desktop | mobile | tablet | bot']
   created_at timestamptz
   expires_at timestamptz [not null]
 }
@@ -145,6 +153,8 @@ Table events {
   button_id uuid [ref: > buttons.id]
   handoff_id uuid [ref: > handoffs.id]
   page_path text
+  visitor_hash text
+  is_visit boolean [not null, default: false, note: 'page_view que abre un ingreso: el visitante no tuvo actividad en los 30 min previos']
   created_at timestamptz
 }
 

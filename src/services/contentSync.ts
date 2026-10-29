@@ -42,10 +42,9 @@ export function validateContentUrl(raw: string, allowedOrigins: string[], allowL
   return url;
 }
 
-/** Fetch real: sin redirecciones, tope de tamaño, timeout y resolución DNS verificada (anti-SSRF / rebinding). */
-export function createContentFetcher(cfg: Pick<Config, 'contentMaxBytes' | 'contentFetchTimeoutMs' | 'allowLocalContentUrls'>): ContentFetcher {
-  const allowLocal = cfg.allowLocalContentUrls;
-  const dispatcher = new Agent({
+/** Conexiones salientes que verifican la IP resuelta (anti-SSRF / DNS rebinding). Las usan la sincronización y el webhook. */
+export function safeDispatcher(allowLocal: boolean): Agent {
+  return new Agent({
     connect: {
       lookup: (hostname: string, options: any, cb: any) => {
         dns.lookup(hostname, { ...options, all: true }, (err, addrs: any) => {
@@ -58,6 +57,12 @@ export function createContentFetcher(cfg: Pick<Config, 'contentMaxBytes' | 'cont
       },
     },
   });
+}
+
+/** Fetch real: sin redirecciones, tope de tamaño, timeout y resolución DNS verificada (anti-SSRF / rebinding). */
+export function createContentFetcher(cfg: Pick<Config, 'contentMaxBytes' | 'contentFetchTimeoutMs' | 'allowLocalContentUrls'>): ContentFetcher {
+  const allowLocal = cfg.allowLocalContentUrls;
+  const dispatcher = safeDispatcher(allowLocal);
   return async (url: string) => {
     const literal = new URL(url).hostname.replace(/^\[|\]$/g, '');
     if (!allowLocal && net.isIP(literal) && isPrivateIp(literal)) throw new ContentError('URL local o privada no permitida');

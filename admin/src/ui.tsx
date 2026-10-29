@@ -22,6 +22,23 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
   return { data, error, loading, reload };
 }
 
+/** Actualiza los datos en vivo: vuelve a consultar cada `ms` mientras la pestaña esté visible (y al volver a ella). */
+export function useLive(reload: () => void | Promise<void>, ms = 15000) {
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === 'visible') void reload();
+    };
+    const timer = setInterval(tick, ms);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [reload, ms]);
+}
+
+export const LiveBadge = () => <span className="live" title="Se actualiza solo cada 15 segundos">● En vivo</span>;
+
 export const ErrorBox = ({ msg }: { msg: string }) => (msg ? <div className="alert error" role="alert">{msg}</div> : null);
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {

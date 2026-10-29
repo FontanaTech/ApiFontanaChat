@@ -365,7 +365,7 @@ describe('chatbot', () => {
     env.llm.impl = async () => JSON.stringify({ intent: 'unknown', answer: '' });
     const r = await c.post('/chat', { message: 'jugadores famosos de ajedrez' });
     expect(r.body.type).toBe('handoff_offer');
-    expect(r.body.message).toMatch(/No tengo esa información/);
+    expect(r.body.message).toMatch(/(no tengo|no aparece|no encuentro|no la tengo).*sitio/i);
     expect(r.body.waUrl).toMatch(/^https:\/\/wa\.me\/\d+\?text=/);
     expect(r.body.message).not.toMatch(/\d{8,}/);
   });
@@ -374,7 +374,7 @@ describe('chatbot', () => {
     env.llm.impl = async () => 'esto no es json';
     const r = await c.post('/chat', { message: '¿Qué servicios ofrecen los domingos?' });
     expect(r.body.type).toBe('handoff_offer');
-    expect(r.body.message).toMatch(/No tengo esa información/);
+    expect(r.body.message).toMatch(/(no tengo|no aparece|no encuentro|no la tengo).*sitio/i);
   });
 
   it('descarta respuestas con teléfonos, correos o enlaces que el sitio no publica', async () => {
@@ -390,7 +390,7 @@ describe('chatbot', () => {
     say('El servicio no ofrece cobro por WhatsApp ni atención los domingos.');
     const r = await c.post('/chat', { message: '¿Atienden por whatsapp los domingos?' });
     expect(r.body.type).toBe('handoff_offer');
-    expect(r.body.message).toMatch(/No tengo esa información/);
+    expect(r.body.message).toMatch(/(no tengo|no aparece|no encuentro|no la tengo).*sitio/i);
     expect(r.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
   });
 

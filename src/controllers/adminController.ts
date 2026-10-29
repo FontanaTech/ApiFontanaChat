@@ -17,6 +17,7 @@ import { syncCompanyContent } from '../services/contentSync';
 import { eligibleRecipients } from '../services/assignment';
 import { warmUpChat } from '../services/chat';
 import { getCompanyContent } from '../models/companies';
+import { generateWebhookSecret, validateWebhookUrl } from '../services/webhook';
 
 function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
@@ -112,14 +113,35 @@ export function adminController(deps: AppDeps) {
     },
     async updateCompany(req: Request, res: Response) {
       const b = parse(v.updateCompanyBody, req.body);
-      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined || b.llmDailyTokens !== undefined)) {
-        throw forbidden('Solo un superadmin puede cambiar el slug, el estado o el límite de IA de la empresa');
+      const webhookChange = b.webhookUrl !== undefined || b.regenerateWebhookSecret !== undefined;
+      if (req.admin!.role !== 'superadmin' && (b.slug !== undefined || b.active !== undefined || b.llmDailyTokens !== undefined || webhookChange)) {
+        throw forbidden('Solo un superadmin puede cambiar el slug, el estado, el límite de IA ni el webhook de la empresa');
       }
-      const c = await audited(req, { companyId: cid(req), entity: 'company', action: b.active === false ? 'deactivate' : 'update' }, async (q) => ({
-        before: must(await companies.getCompany(q, cid(req))),
-        after: must(await companies.updateCompany(q, cid(req), b)),
-      }));
-      res.json(c);
+      let webhookSecret: string | undefined; // solo se devuelve en el momento en que se genera
+      let webhookUrl: string | null | undefined;
+      if (b.webhookUrl) {
+        try {
+          webhookUrl = validateWebhookUrl(b.webhookUrl, deps.cfg.allowLocalContentUrls);
+        } catch (e: any) {
+          throw badRequest(e.message);
+        }
+      }
+      const c = await audited(req, { companyId: cid(req), entity: 'company', action: b.active === false ? 'deactivate' : 'update' }, async (q) => {
+        const before = must(await companies.getCompany(q, cid(req)));
+        let after = must(await companies.updateCompany(q, cid(req), b));
+        if (webhookChange) {
+          const url = b.webhookUrl === undefined ? before.webhook_url : (webhookUrl ?? null);
+          if (!url) {
+            if (b.regenerateWebhookSecret) throw badRequest('Primero configura la URL del webhook');
+            after = must(await companies.setWebhook(q, cid(req), { url: null }));
+          } else {
+            if (!before.webhook_secret_set || b.regenerateWebhookSecret) webhookSecret = generateWebhookSecret();
+            after = must(await companies.setWebhook(q, cid(req), { url, secret: webhookSecret }));
+          }
+        }
+        return { before, after };
+      });
+      res.json(webhookSecret ? { ...c, webhookSecret } : c);
     },
     async syncContent(req: Request, res: Response) {
       const company = must(await companies.getCompany(db, cid(req)));
@@ -151,6 +173,14 @@ export function adminController(deps: AppDeps) {
         globalToday: allToday.reduce((n, r) => n + r.tokens, 0),
         days,
       });
+    },
+    /** Envía un evento `test` firmado al webhook de la empresa y devuelve el resultado. */
+    async testWebhook(req: Request, res: Response) {
+      if (req.admin!.role !== 'superadmin') throw forbidden('Solo un superadmin puede probar el webhook');
+      const company = must(await companies.getCompany(db, cid(req)));
+      if (!company.webhook_url) throw badRequest('La empresa no tiene un webhook configurado');
+      const r = await deps.webhook.test(company);
+      res.status(r.ok ? 200 : 422).json(r);
     },
     async contentSummary(req: Request, res: Response) {
       const json = (await getCompanyContent(db, cid(req))) as v.ChatbotContent | null;

@@ -47,6 +47,7 @@ export function adminRouter(deps: AppDeps) {
   co.patch('/', h(a.updateCompany));
   co.post('/content/sync', h(a.syncContent));
   co.get('/content', h(a.contentSummary));
+  co.post('/webhook/test', h(a.testWebhook));
   co.get('/setup', h(a.setup));
   co.get('/llm-usage', h(a.llmUsage));
 

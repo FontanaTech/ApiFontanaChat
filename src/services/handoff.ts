@@ -5,6 +5,7 @@ import { getButtonByKey } from '../models/catalog';
 import { getDefaultPortfolio, getPortfolioByKey } from '../models/portfolios';
 import { findHandoffByKey, insertEvent, insertHandoff, type Handoff, type PublicSession } from '../models/public';
 import { assignRecipient, type Recipient, type RecipientFilter } from './assignment';
+import type { WebhookNotify } from './webhook';
 
 export interface HandoffInput {
   /** Opcional: un botón con asesor fijo lo respeta; con cartera usa esa cartera; sin nada, la cartera por defecto. */
@@ -18,15 +19,12 @@ export interface HandoffInput {
   portfolioKeyHint?: string;
   name?: string;
   reason?: string;
-  /** Mensaje de WhatsApp ya redactado (personalizado); sustituye al texto genérico y se guarda como motivo. */
-  waText?: string;
   idempotencyKey: string;
 }
 
-export function buildWaUrl(number: string, companyName: string, name: string, reason: string, ref: string, waText = ''): string {
+export function buildWaUrl(number: string, companyName: string, name: string, reason: string, ref: string): string {
   const intro = name ? `Hola ${companyName}, soy ${name}.` : `Hola ${companyName}.`;
-  const body = waText || (reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor.');
-  const text = `${intro} ${body} (Ref. ${ref})`;
+  const text = `${intro} ${reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor.'} (Ref. ${ref})`;
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 
@@ -40,8 +38,10 @@ export interface HandoffResult {
  * Crea la derivación de forma idempotente por (sesión, clave).
  * Consulta el teléfono vigente en la base en el momento de la llamada; nunca usa datos del cliente.
  */
-export async function createHandoff(db: Db, company: Company, session: PublicSession, input: HandoffInput): Promise<HandoffResult> {
-  return db.tx(async (q) => {
+export async function createHandoff(
+  db: Db, company: Company, session: PublicSession, input: HandoffInput, notify?: WebhookNotify,
+): Promise<HandoffResult> {
+  const out = await db.tx(async (q) => {
     // Serializa solicitudes concurrentes de la misma sesión (evita doble asignación con la misma clave).
     await q.query('SELECT id FROM public_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [session.id, company.id]);
 
@@ -87,9 +87,8 @@ export async function createHandoff(db: Db, company: Company, session: PublicSes
 
     const refCode = session.id.slice(0, 4) + Date.now().toString(36).slice(-4).toUpperCase();
     const name = input.name ?? '';
-    const waText = input.waText ?? '';
-    const reason = waText || (input.reason ?? '');
-    const waUrl = buildWaUrl(recipient.number, company.name, name, reason, refCode, waText);
+    const reason = input.reason ?? '';
+    const waUrl = buildWaUrl(recipient.number, company.name, name, reason, refCode);
     let handoff: Handoff;
     try {
       handoff = await insertHandoff(q, {
@@ -101,7 +100,15 @@ export async function createHandoff(db: Db, company: Company, session: PublicSes
       if ((e?.code ?? e?.cause?.code) === '23505') throw conflict('Solicitud duplicada');
       throw e;
     }
-    await insertEvent(q, { companyId: company.id, sessionId: session.id, type: 'handoff_created', buttonId, handoffId: handoff.id });
+    await insertEvent(q, {
+      companyId: company.id, sessionId: session.id, type: 'handoff_created', buttonId, handoffId: handoff.id,
+      visitorHash: session.device === 'bot' ? null : session.visitor_hash,
+    });
     return { handoff, replayed: false, advisorName: recipient.advisorName };
   });
+  // Ya confirmada la transacción: aviso en vivo (sin el número del asesor).
+  if (!out.replayed) {
+    notify?.(company, 'handoff_created', { handoffId: out.handoff.id, advisorName: out.advisorName, portfolioId: out.handoff.portfolio_id, reason: out.handoff.reason || null });
+  }
+  return out;
 }

@@ -6,6 +6,7 @@ import type { PublicSession } from './models/public';
 import type { ContentFetcher } from './services/contentSync';
 import type { LlmBudget } from './services/llmBudget';
 import type { PublicCache } from './services/publicCache';
+import type { WebhookService } from './services/webhook';
 import type { LlmClient } from './services/ollama';
 
 export interface AppDeps {
@@ -15,6 +16,7 @@ export interface AppDeps {
   contentFetcher: ContentFetcher;
   cache: PublicCache;
   budget: LlmBudget;
+  webhook: WebhookService;
 }
 
 declare global {

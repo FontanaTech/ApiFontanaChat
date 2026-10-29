@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { ErrorBox, Field, fmt, useLoad } from '../ui';
+import { ErrorBox, Field, LiveBadge, fmt, useLive, useLoad } from '../ui';
+
+const DEVICES: Record<string, string> = { desktop: 'Computador', mobile: 'Celular', tablet: 'Tableta', bot: 'Bot' };
 
 export const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -20,9 +22,10 @@ export function RecordsTab({ companyId }: { companyId: string }) {
   const h = useLoad(() => api<{ items: any[] }>('GET', `/companies/${companyId}/handoffs${qs}`), [companyId, from, to]);
   const e = useLoad(() => api<{ items: any[] }>('GET', `/companies/${companyId}/events${qs}`), [companyId, from, to]);
 
+  useLive(() => Promise.all([h.reload(), e.reload()]));
   return (
     <>
-      <DateRange from={from} to={to} setFrom={setFrom} setTo={setTo} />
+      <DateRange from={from} to={to} setFrom={setFrom} setTo={setTo} /> <LiveBadge />
       <ErrorBox msg={h.error || e.error} />
       <div className="card">
         <h2>Derivaciones a WhatsApp</h2>
@@ -43,10 +46,10 @@ export function RecordsTab({ companyId }: { companyId: string }) {
       <div className="card">
         <h2>Eventos</h2>
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Página</th><th>Botón</th></tr></thead>
+          <thead><tr><th>Fecha</th><th>Tipo</th><th>Página</th><th>Botón</th><th>Dispositivo</th><th>Navegador</th></tr></thead>
           <tbody>
             {e.data?.items.map((r) => (
-              <tr key={r.id}><td>{fmt(r.created_at)}</td><td>{r.type}</td><td>{r.page_path ?? '—'}</td><td>{r.button_label ?? '—'}</td></tr>
+              <tr key={r.id}><td>{fmt(r.created_at)}</td><td>{r.type === 'page_view' && r.is_visit ? 'Ingreso' : r.type}</td><td>{r.page_path ?? '—'}</td><td>{r.button_label ?? '—'}</td><td>{DEVICES[r.device] ?? r.device ?? '—'}</td><td>{r.browser ? `${r.browser} · ${r.os}` : '—'}</td></tr>
             ))}
           </tbody>
         </table>

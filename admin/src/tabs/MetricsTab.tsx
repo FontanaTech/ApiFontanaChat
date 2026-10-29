@@ -1,20 +1,24 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { ErrorBox, useLoad } from '../ui';
+import { ErrorBox, LiveBadge, useLive, useLoad } from '../ui';
 import { DateRange, isoDay } from './RecordsTab';
 
 const LABELS: Record<string, string> = {
-  page_view: 'Visitas a la página',
+  visit: 'Ingresos',
+  page_view: 'Vistas de página',
   chat_open: 'Chats abiertos',
   button_click: 'Clics en botones',
   handoff_created: 'Derivaciones creadas',
   whatsapp_click: 'Clics en WhatsApp',
 };
 
+const DEVICE_NAMES: Record<string, string> = { desktop: 'Computador', mobile: 'Celular', tablet: 'Tableta', bot: 'Bot' };
+
 export function MetricsTab({ companyId }: { companyId: string }) {
   const [from, setFrom] = useState(isoDay(new Date(Date.now() - 30 * 86400_000)));
   const [to, setTo] = useState(isoDay(new Date()));
   const m = useLoad(() => api('GET', `/companies/${companyId}/metrics?from=${from}&to=${to}`), [companyId, from, to]);
+  useLive(m.reload);
   const d = m.data;
   const days: string[] = d ? [...new Set<string>(d.byDay.map((x: any) => x.day))] : [];
   const val = (day: string, type: string) => d.byDay.find((x: any) => x.day === day && x.type === type)?.total ?? 0;
@@ -23,6 +27,10 @@ export function MetricsTab({ companyId }: { companyId: string }) {
   return (
     <>
       <DateRange from={from} to={to} setFrom={setFrom} setTo={setTo} />
+      <p className="muted">
+        Un <strong>ingreso</strong> es una visita real: se identifica al visitante por su IP y navegador, y no vuelve a contarse al cambiar de vista, recargar o abrir otra
+        pestaña hasta pasados 30 minutos sin actividad. Las <strong>vistas de página</strong> cuentan cada cambio de vista. <LiveBadge />
+      </p>
       <ErrorBox msg={m.error} />
       {d && (
         <>
@@ -31,9 +39,23 @@ export function MetricsTab({ companyId }: { companyId: string }) {
               <div className="stat" key={k}>
                 <div className="num">{d.counts[k] ?? 0}</div>
                 <div>{LABELS[k]}</div>
-                <small className="muted">{d.sessions[k] ?? 0} sesiones</small>
+                <small className="muted">{d.sessions[k] ?? 0} {k === 'visit' ? 'visitantes únicos' : 'sesiones'}</small>
               </div>
             ))}
+          </div>
+          <div className="card">
+            <h2>Ingresos por dispositivo y navegador</h2>
+            <div className="inline" style={{ alignItems: 'flex-start', gap: 32 }}>
+              {([['Dispositivo', d.byDevice], ['Navegador', d.byBrowser], ['Sistema', d.byOs]] as const).map(([title, rows]) => (
+                <table key={title}>
+                  <thead><tr><th>{title}</th><th>Ingresos</th></tr></thead>
+                  <tbody>
+                    {(rows ?? []).map((r: any) => <tr key={r.name}><td>{DEVICE_NAMES[r.name] ?? r.name}</td><td>{r.visits}</td></tr>)}
+                    {(rows ?? []).length === 0 && <tr><td colSpan={2} className="muted">Sin ingresos.</td></tr>}
+                  </tbody>
+                </table>
+              ))}
+            </div>
           </div>
           <div className="card">
             <h2>Por cartera</h2>

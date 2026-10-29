@@ -7,11 +7,18 @@ import { errorHandler, limiter, notFoundHandler } from './middleware/security';
 import { adminRouter, publicRouter } from './routes';
 import { createLlmBudget } from './services/llmBudget';
 import { createPublicCache } from './services/publicCache';
+import { createWebhookPoster, createWebhookService, type WebhookPoster } from './services/webhook';
 
 export const ADMIN_DIST = path.resolve(__dirname, '..', 'admin', 'dist');
 
-export function createApp(input: Omit<AppDeps, 'cache' | 'budget'>) {
-  const deps: AppDeps = { ...input, cache: createPublicCache(input.cfg), budget: createLlmBudget(input.db, input.cfg) };
+export function createApp(input: Omit<AppDeps, 'cache' | 'budget' | 'webhook'> & { webhookPoster?: WebhookPoster }) {
+  const { webhookPoster, ...rest } = input;
+  const deps: AppDeps = {
+    ...rest,
+    cache: createPublicCache(input.cfg),
+    budget: createLlmBudget(input.db, input.cfg),
+    webhook: createWebhookService(input.db, webhookPoster ?? createWebhookPoster(input.cfg)),
+  };
   const { cfg, db } = deps;
   const app = express();
   app.disable('x-powered-by');

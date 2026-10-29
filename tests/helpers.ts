@@ -10,6 +10,7 @@ import { hashPassword } from '../src/services/password';
 import type { ContentFetcher } from '../src/services/contentSync';
 import type { LlmClient, LlmMessage } from '../src/services/ollama';
 import { LlmUnavailableError } from '../src/services/ollama';
+import type { WebhookPoster } from '../src/services/webhook';
 
 /** Base Postgres real (PGlite) en memoria; aplica las mismas migraciones SQL que Neon. */
 export async function createTestDb(): Promise<Db> {
@@ -41,6 +42,8 @@ export interface TestEnv {
   cfg: Config;
   llm: { impl: (m: LlmMessage[]) => Promise<string>; calls: LlmMessage[][]; tokens: number };
   fetcher: { impl: ContentFetcher; calls: string[] };
+  /** Webhook de salida simulado: guarda cada POST y responde con `status` (o lanza si `fail`). */
+  webhook: { calls: { url: string; headers: Record<string, string>; body: any; raw: string }[]; status: number; fail: boolean };
 }
 
 export async function createEnv(overrides: Partial<Config> = {}): Promise<TestEnv> {
@@ -65,14 +68,20 @@ export async function createEnv(overrides: Partial<Config> = {}): Promise<TestEn
       return out;
     },
   };
-  const deps: Omit<AppDeps, 'cache' | 'budget'> = {
+  const webhook: TestEnv['webhook'] = { calls: [], status: 200, fail: false };
+  const deps: Omit<AppDeps, 'cache' | 'budget' | 'webhook'> & { webhookPoster: WebhookPoster } = {
     cfg, db, llm: llmClient,
+    webhookPoster: async (url, headers, raw) => {
+      if (webhook.fail) throw new Error('sin conexión');
+      webhook.calls.push({ url, headers, body: JSON.parse(raw), raw });
+      return webhook.status;
+    },
     contentFetcher: (url) => {
       fetcher.calls.push(url);
       return fetcher.impl(url);
     },
   };
-  return { db, app: createApp(deps), cfg, llm, fetcher };
+  return { db, app: createApp(deps), cfg, llm, fetcher, webhook };
 }
 
 export interface AdminSession {
@@ -112,13 +121,16 @@ export function adminApi(env: TestEnv, s: AdminSession) {
   };
 }
 
+export const TEST_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
 /** Cliente público simulado: lleva Origin y token de sesión. */
 export async function publicClient(env: TestEnv, slug: string, origin: string) {
   const base = `/api/v1/public/${slug}`;
-  const res = await request(env.app).post(`${base}/sessions`).set('Origin', origin).send({ pagePath: '/' });
+  // Un navegador real siempre envía user-agent; sin él la sesión se trata como bot y no cuenta como ingreso.
+  const res = await request(env.app).post(`${base}/sessions`).set('Origin', origin).set('User-Agent', TEST_UA).send({ pagePath: '/' });
   if (res.status !== 201) throw new Error(`sesión pública falló: ${res.status} ${JSON.stringify(res.body)}`);
   const token: string = res.body.token;
-  const withAuth = (r: request.Test) => r.set('Origin', origin).set('Authorization', `Bearer ${token}`);
+  const withAuth = (r: request.Test) => r.set('Origin', origin).set('User-Agent', TEST_UA).set('Authorization', `Bearer ${token}`);
   return {
     token,
     get: (p: string) => withAuth(request(env.app).get(base + p)),
