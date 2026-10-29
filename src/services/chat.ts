@@ -9,6 +9,8 @@ import type { PublicSession } from '../models/public';
 import { HttpError } from '../utils/errors';
 import { findPortfolioByText } from '../models/portfolios';
 import { createHandoff } from './handoff';
+import { composeWaMessage, type WaTurn } from './waMessage';
+import { findHandoffByKey } from '../models/public';
 import type { LlmBudget } from './llmBudget';
 import { LlmUnavailableError, type LlmClient, type LlmMessage, type LlmMeta } from './ollama';
 
@@ -352,6 +354,27 @@ function parseLlm(raw: string) {
 
 /* ---------- respuesta ---------- */
 
+/** ¿El turno del visitante trae una consulta real (no un saludo ni solo "quiero un asesor")? */
+const isTopical = (text: string): boolean => {
+  const n = normalize(text);
+  return n.length > 3 && !(GREETING_RE.test(n) && n.length <= 30) && !(HUMAN_RE.test(n) && n.length <= 45);
+};
+
+/**
+ * Conversación que se usa para redactar el mensaje de WhatsApp: los últimos turnos, sin los que tocan temas sensibles
+ * (cédulas, saldos, pagos…), que nunca salen hacia el modelo. Vacía si el visitante aún no planteó ninguna consulta.
+ */
+function conversationTurns(history: HistoryTurn[], message: string): WaTurn[] {
+  const all: WaTurn[] = [...history.slice(-4), { role: 'user' as const, content: message }].filter((t) => !SENSITIVE_RE.test(normalize(t.content)));
+  return all.some((t) => t.role === 'user' && isTopical(t.content)) ? all : [];
+}
+
+/** Última consulta del visitante, corta y sin puntuación final, para el mensaje sencillo de WhatsApp. */
+function lastQuestion(turns: WaTurn[]): string | undefined {
+  const q = [...turns].reverse().find((t) => t.role === 'user' && isTopical(t.content));
+  return q ? q.content.replace(/\s+/g, ' ').replace(/[\s.¿?¡!]+$/g, '').replace(/^[\s¿¡]+/, '').slice(0, 150) || undefined : undefined;
+}
+
 /** Cédulas, cuentas o teléfonos que el visitante escriba no salen del servidor hacia el modelo. */
 export const maskNumbers = (s: string): string => s.replace(/\d[\d\s().-]{4,}\d/g, '[número]');
 
@@ -387,14 +410,21 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
    * Es una sola por sesión (clave fija), así que insistir no cambia de asesor ni duplica registros.
    * Si no hay ninguno disponible lo dice sin inventar nada.
    */
-  const toAdvisor = async (lead: string): Promise<ChatReply> => {
+  const toAdvisor = async (lead: string, personalize = true): Promise<ChatReply> => {
     try {
       // Si el visitante nombra una cartera (p. ej. una entidad), se le pasa con los asesores de esa cartera.
       const wallet = await findPortfolioByText(deps.db, company.id, message);
-      const r = await createHandoff(deps.db, company, session, {
-        idempotencyKey: wallet ? `chat-handoff-${wallet.key}` : 'chat-handoff',
-        portfolioKeyHint: wallet?.key,
-      });
+      const idempotencyKey = wallet ? `chat-handoff-${wallet.key}` : 'chat-handoff';
+      // El mensaje de WhatsApp refleja la consulta del visitante; si ya hay derivación en la sesión no se vuelve a redactar.
+      let waText: string | undefined;
+      let reason: string | undefined;
+      if (personalize && !(await findHandoffByKey(deps.db, company.id, session.id, idempotencyKey))) {
+        const turns = conversationTurns(history, message);
+        waText = (await composeWaMessage({ llm: deps.llm, budget: deps.budget }, company, turns)) ?? undefined;
+        // Sin modelo: se cita la última consulta del visitante tal cual, en vez del texto genérico.
+        if (!waText) reason = lastQuestion(turns);
+      }
+      const r = await createHandoff(deps.db, company, session, { idempotencyKey, portfolioKeyHint: wallet?.key, waText, reason });
       return { type: 'handoff_offer', message: `${lead} Te paso con un asesor por WhatsApp.`, waUrl: r.handoff.wa_url, handoffId: r.handoff.id };
     } catch (e) {
       if (e instanceof HttpError && e.code === 'no_advisor_available') return { type: 'fallback', message: NONE };
@@ -404,7 +434,7 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
 
   const nm = normalize(message);
   if (HUMAN_RE.test(nm)) return toAdvisor('Claro.');
-  if (SENSITIVE_RE.test(nm)) return toAdvisor('Por ser un tema personal o sensible no puedo darte esa información por este chat.');
+  if (SENSITIVE_RE.test(nm)) return toAdvisor('Por ser un tema personal o sensible no puedo darte esa información por este chat.', false);
   if (GREETING_RE.test(nm) && nm.length <= 30) {
     return { type: 'answer', message: `¡Hola! Soy el asistente de ${company.name}. ¿En qué puedo ayudarte?` };
   }

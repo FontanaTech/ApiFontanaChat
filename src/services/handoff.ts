@@ -18,12 +18,15 @@ export interface HandoffInput {
   portfolioKeyHint?: string;
   name?: string;
   reason?: string;
+  /** Mensaje de WhatsApp ya redactado (personalizado); sustituye al texto genérico y se guarda como motivo. */
+  waText?: string;
   idempotencyKey: string;
 }
 
-export function buildWaUrl(number: string, companyName: string, name: string, reason: string, ref: string): string {
+export function buildWaUrl(number: string, companyName: string, name: string, reason: string, ref: string, waText = ''): string {
   const intro = name ? `Hola ${companyName}, soy ${name}.` : `Hola ${companyName}.`;
-  const text = `${intro} ${reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor.'} (Ref. ${ref})`;
+  const body = waText || (reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor.');
+  const text = `${intro} ${body} (Ref. ${ref})`;
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 
@@ -84,8 +87,9 @@ export async function createHandoff(db: Db, company: Company, session: PublicSes
 
     const refCode = session.id.slice(0, 4) + Date.now().toString(36).slice(-4).toUpperCase();
     const name = input.name ?? '';
-    const reason = input.reason ?? '';
-    const waUrl = buildWaUrl(recipient.number, company.name, name, reason, refCode);
+    const waText = input.waText ?? '';
+    const reason = waText || (input.reason ?? '');
+    const waUrl = buildWaUrl(recipient.number, company.name, name, reason, refCode, waText);
     let handoff: Handoff;
     try {
       handoff = await insertHandoff(q, {

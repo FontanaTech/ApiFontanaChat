@@ -129,6 +129,8 @@ pasar con un asesor **sin pedir datos**: el servidor crea la derivación (una po
 correo o enlace que el sitio no publica se descarta y también se deriva. Si el modelo trae `sectionSlug`, el enlace se construye con el origen de la URL de contenido
 de esa empresa. Si Ollama falla y la página no responde la pregunta → `type:"fallback"` con `waUrl`; si no hay asesores disponibles, `type:"fallback"` sin `waUrl`.
 
+**Mensaje de WhatsApp personalizado.** Al pasar con un asesor desde el chat, el modelo redacta el primer mensaje de WhatsApp a partir de la consulta del visitante (y los últimos turnos), en primera persona y sin datos inventados (se descartan salidas con enlaces, correos o números). Se redacta una sola vez por derivación, respeta el límite diario de tokens y espera como máximo 6 s: sin modelo, con error o salida no confiable se usa «Quiero consultar sobre: <su pregunta>»; si solo pidió un asesor, el texto genérico. Los temas sensibles (cédula, saldo, pagos…) nunca se envían al modelo.
+
 **Contenido (`/chatbot-content.json`).** Esquema: `{slug?, siteName?, sections:[{slug,title,route,text}]}`. El `client/` incluye
 `buildChatbotContent()` y `chatbotContentPlugin()` (plugin Vite) para generarlo en el build desde el mismo módulo de textos que usan los componentes.
 Sincronización (admin): solo la URL guardada por el admin; https (http solo con `ALLOW_LOCAL_CONTENT_URLS=true` y `NODE_ENV≠production`),
