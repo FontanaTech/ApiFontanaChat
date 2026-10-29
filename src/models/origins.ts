@@ -36,6 +36,10 @@ export async function setOriginActive(q: Queryable, companyId: string, id: strin
   );
 }
 
+export async function deleteOrigin(q: Queryable, companyId: string, id: string): Promise<void> {
+  await q.query('DELETE FROM allowed_origins WHERE id = $1 AND company_id = $2', [id, companyId]);
+}
+
 export async function activeOrigins(q: Queryable, companyId: string): Promise<string[]> {
   const r = await q.query<{ origin: string }>('SELECT origin FROM allowed_origins WHERE company_id = $1 AND active', [companyId]);
   return r.rows.map((x) => x.origin);

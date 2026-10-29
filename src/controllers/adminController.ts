@@ -175,6 +175,15 @@ export function adminController(deps: AppDeps) {
       })));
     },
 
+    async deleteOrigin(req: Request, res: Response) {
+      await audited(req, { companyId: cid(req), entity: 'origin', action: 'delete' }, async (q) => {
+        const before = must(await origins.getOrigin(q, cid(req), id(req)));
+        await origins.deleteOrigin(q, cid(req), before.id);
+        return { before, after: { id: before.id } };
+      });
+      res.status(204).end();
+    },
+
     /* ---------- asesores y teléfonos ---------- */
     async listAdvisors(req: Request, res: Response) {
       const [advisors, phones] = await Promise.all([catalog.listAdvisors(db, cid(req)), catalog.listPhones(db, cid(req))]);
@@ -210,6 +219,15 @@ export function adminController(deps: AppDeps) {
         if (b.portfolioId) must(await portfolios.getPortfolio(q, cid(req), b.portfolioId), 'Cartera no encontrada en esta empresa');
         return { before, after: must(await catalog.updatePhone(q, cid(req), id(req), b)) };
       }));
+    },
+
+    async deletePhone(req: Request, res: Response) {
+      await audited(req, { companyId: cid(req), entity: 'phone', action: 'delete' }, async (q) => {
+        const before = must(await catalog.getPhone(q, cid(req), id(req)));
+        await catalog.deletePhone(q, cid(req), before);
+        return { before, after: { id: before.id } };
+      });
+      res.status(204).end();
     },
 
     /* ---------- carteras ---------- */

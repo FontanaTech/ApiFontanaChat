@@ -53,12 +53,14 @@ export function adminRouter(deps: AppDeps) {
   co.get('/origins', h(a.listOrigins));
   co.post('/origins', h(a.createOrigin));
   co.patch('/origins/:id', h(a.setOriginActive));
+  co.delete('/origins/:id', h(a.deleteOrigin));
 
   co.get('/advisors', h(a.listAdvisors));
   co.post('/advisors', h(a.createAdvisor));
   co.patch('/advisors/:id', h(a.updateAdvisor));
   co.post('/phones', h(a.createPhone));
   co.patch('/phones/:id', h(a.updatePhone));
+  co.delete('/phones/:id', h(a.deletePhone));
 
   co.get('/portfolios', h(a.listPortfolios));
   co.post('/portfolios', h(a.createPortfolio));

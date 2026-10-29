@@ -73,6 +73,18 @@ export async function updatePhone(
   );
 }
 
+/** Elimina el teléfono; las derivaciones previas conservan el número y quedan sin `phone_id`. Si era el principal, promueve otro del asesor. */
+export async function deletePhone(q: Queryable, companyId: string, phone: Phone): Promise<void> {
+  await q.query('DELETE FROM phones WHERE id = $1 AND company_id = $2', [phone.id, companyId]);
+  if (phone.is_primary) {
+    await q.query(
+      `UPDATE phones SET is_primary = true, updated_at = now()
+       WHERE id = (SELECT id FROM phones WHERE advisor_id = $1 AND company_id = $2 ORDER BY active DESC, created_at LIMIT 1)`,
+      [phone.advisor_id, companyId],
+    );
+  }
+}
+
 /* ---------- botones ---------- */
 export async function listButtons(q: Queryable, companyId: string, onlyActive = false): Promise<Button[]> {
   return (

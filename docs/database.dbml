@@ -126,7 +126,7 @@ Table handoffs {
   button_id uuid [ref: > buttons.id]
   portfolio_id uuid [ref: > portfolios.id, note: 'cartera que atendio la derivacion']
   advisor_id uuid [not null, ref: > advisors.id]
-  phone_id uuid [not null, ref: > phones.id]
+  phone_id uuid [ref: > phones.id, note: 'NULL si el telefono se elimino; phone_number conserva el historial']
   phone_number text [not null, note: 'instantanea del numero vigente al crear']
   visitor_name text [not null]
   reason text [not null]

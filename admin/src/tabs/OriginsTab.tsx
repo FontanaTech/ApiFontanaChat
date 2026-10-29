@@ -27,7 +27,8 @@ export function OriginsTab({ companyId }: { companyId: string }) {
             <tr key={o.id}>
               <td><code>{o.origin}</code></td>
               <td><Badge on={o.active} /></td>
-              <td><button onClick={() => toggle.run(() => api('PATCH', `${base}/${o.id}`, { active: !o.active }))}>{o.active ? 'Desactivar' : 'Activar'}</button></td>
+              <td><button onClick={() => toggle.run(() => api('PATCH', `${base}/${o.id}`, { active: !o.active }))}>{o.active ? 'Desactivar' : 'Activar'}</button>{' '}
+                <button className="danger" onClick={() => { if (window.confirm(`¿Eliminar el dominio ${o.origin}? Ese sitio dejará de poder usar el chat.`)) void toggle.run(() => api('DELETE', `${base}/${o.id}`)); }}>Eliminar</button></td>
             </tr>
           ))}
         </tbody>

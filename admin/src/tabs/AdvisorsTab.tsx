@@ -87,7 +87,8 @@ function PhoneRow({ phone, base, act, portfolios }: { phone: any; base: string; 
       <td><Badge on={phone.active} /></td>
       <td>
         {!editing && <button onClick={() => setEditing(true)}>Cambiar número</button>}
-        <button onClick={() => patch({ active: !phone.active })}>{phone.active ? 'Desactivar' : 'Activar'}</button>
+        <button onClick={() => patch({ active: !phone.active })}>{phone.active ? 'Desactivar' : 'Activar'}</button>{' '}
+        <button className="danger" onClick={() => { if (window.confirm(`¿Eliminar el número ${phone.number}? El historial de derivaciones conserva el número.`)) void act.run(() => api('DELETE', `${base}/phones/${phone.id}`)); }}>Eliminar</button>
       </td>
     </tr>
   );
