@@ -6,11 +6,12 @@ import { listPortfolios } from '../models/portfolios';
 import { createPublicSession, getHandoffForSession, insertEvent, markWhatsappClicked } from '../models/public';
 import { hashToken, randomToken } from '../utils/crypto';
 import { badRequest, notFound } from '../utils/errors';
-import { createSessionBody, eventBody, handoffBody } from '../validation/schemas';
+import { createSessionBody, eventBody, handoffBody, liveChatBody } from '../validation/schemas';
 import { eligibleRecipients } from '../services/assignment';
 import { answerChat } from '../services/chat';
 import { createHandoff } from '../services/handoff';
 import { parseUserAgent, visitorHash } from '../utils/userAgent';
+import { finishBotTurn, publicConversation, startUserTurn } from '../services/liveChat';
 
 function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
@@ -22,14 +23,6 @@ function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
 const trackedVisitor = (s: { visitor_hash: string | null; device: string | null }) => (s.device === 'bot' ? null : s.visitor_hash);
 
 export function publicController(deps: AppDeps) {
-  const chatBody = z.object({
-    message: z.string().trim().min(1).max(deps.cfg.chatMessageMaxChars),
-    history: z
-      .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(deps.cfg.chatMessageMaxChars * 2) }))
-      .max(6)
-      .default([]),
-  });
-
   return {
     async createSession(req: Request, res: Response) {
       const body = parse(createSessionBody, req.body);
@@ -86,9 +79,58 @@ export function publicController(deps: AppDeps) {
     },
 
     async chat(req: Request, res: Response) {
-      const body = parse(chatBody, req.body);
-      const reply = await answerChat({ db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore, budget: deps.budget, notify: deps.live.publish }, req.pub!.company, req.pub!.session!, body.message, body.history);
-      res.json(reply);
+      const body = parse(liveChatBody, req.body);
+      if (body.message.length > deps.cfg.chatMessageMaxChars) throw badRequest('Mensaje demasiado largo');
+      const { company, session } = req.pub!;
+      // Los widgets anteriores conservan la derivación directa a WhatsApp; el cliente nuevo activa la conversación en vivo.
+      if (!body.live) {
+        const reply = await answerChat({
+          db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars,
+          fastScore: deps.cfg.chatFastScore, budget: deps.budget, notify: deps.live.publish,
+        }, company, session!, body.message, body.history);
+        res.json(reply);
+        return;
+      }
+      const turn = await startUserTurn(deps.db, company, session!, body.message, {
+        portfolioKey: body.portfolioKey, document: body.document, name: body.name, subject: body.subject,
+      });
+      if (turn.created) deps.live.publish(company.id, 'conversation_created', { conversationId: turn.conversation.id, status: turn.conversation.status });
+      deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: turn.message.id, sender: 'USER' });
+      if (!turn.botMayReply) {
+        if (turn.escalated) deps.live.publish(company.id, 'chat_status', { conversationId: turn.conversation.id, status: turn.conversation.status });
+        res.json({ type: 'live', message: turn.escalated
+          ? 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.'
+          : 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: turn.conversation.status } });
+        return;
+      }
+      if (!turn.conversation.document || !turn.conversation.portfolio_id) {
+        let prompt = 'Para identificar tu solicitud, escribe tu número de documento.';
+        if (turn.conversation.document && !turn.conversation.portfolio_id) {
+          const portfolios = await listPortfolios(deps.db, company.id, true);
+          prompt = `¿Con cuál cartera está relacionada tu consulta? ${portfolios.map((p) => p.name).join(', ')}.`;
+        }
+        const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, prompt);
+        if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
+        res.json({ type: 'answer', message: prompt, conversation: { id: turn.conversation.id, status: saved.conversation.status } });
+        return;
+      }
+      const reply = await answerChat({
+        db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore,
+        budget: deps.budget, notify: deps.live.publish, liveEscalation: true,
+      }, company, session!, body.message, body.history);
+      const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, reply.message, reply.type !== 'answer');
+      if (saved.message) deps.live.publish(company.id, 'chat_message', {
+        conversationId: turn.conversation.id, messageId: saved.message.id, sender: saved.message.sender_type,
+      });
+      if (saved.conversation.status !== 'BOT_ACTIVO') deps.live.publish(company.id, 'chat_status', { conversationId: turn.conversation.id, status: saved.conversation.status });
+      res.json(saved.conversation.status === 'BOT_ACTIVO'
+        ? { ...reply, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
+        : { type: 'live', message: saved.message?.content ?? 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
+    },
+
+    async conversation(req: Request, res: Response) {
+      const { company, session } = req.pub!;
+      res.json(await publicConversation(deps.db, company.id, session!.id));
     },
 
     async createHandoff(req: Request, res: Response) {

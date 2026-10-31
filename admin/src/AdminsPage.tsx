@@ -5,20 +5,27 @@ import { Badge, ErrorBox, Field, fmt, useAction, useLoad } from './ui';
 export function AdminsPage() {
   const admins = useLoad(() => api<{ items: any[] }>('GET', '/admins'), []);
   const companies = useLoad(() => api<{ items: any[] }>('GET', '/companies'), []);
-  const [f, setF] = useState({ email: '', name: '', password: '', role: 'company_admin', companyId: '' });
+  const [f, setF] = useState({ email: '', name: '', password: '', role: 'company_admin', companyId: '', advisorId: '' });
+  const advisors = useLoad(
+    () => f.companyId ? api<{ items: any[] }>('GET', `/companies/${f.companyId}/advisors`) : Promise.resolve({ items: [] }),
+    [f.companyId],
+  );
   const create = useAction(admins.reload);
   const toggle = useAction(admins.reload);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     void create.run(async () => {
-      await api('POST', '/admins', { ...f, companyId: f.role === 'company_admin' ? f.companyId : null });
+      await api('POST', '/admins', {
+        ...f, companyId: f.role === 'superadmin' ? null : f.companyId,
+        advisorId: f.role === 'advisor' ? f.advisorId : null,
+      });
       setF({ ...f, email: '', name: '', password: '' });
     });
   };
   return (
     <>
-      <h1>Administradores</h1>
+      <h1>Usuarios del panel</h1>
       <p className="muted">No existe registro público: solo un superadmin crea cuentas. El primer superadmin se crea con <code>npm run admin:create</code>.</p>
       <ErrorBox msg={admins.error || toggle.error} />
       <div className="card">
@@ -46,14 +53,24 @@ export function AdminsPage() {
           <Field label="Rol">
             <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
               <option value="company_admin">company_admin</option>
+              <option value="supervisor">supervisor</option>
+              <option value="advisor">advisor</option>
               <option value="superadmin">superadmin</option>
             </select>
           </Field>
-          {f.role === 'company_admin' && (
+          {f.role !== 'superadmin' && (
             <Field label="Empresa">
               <select value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })} required>
                 <option value="">—</option>
                 {companies.data?.items.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+          )}
+          {f.role === 'advisor' && (
+            <Field label="Asesor vinculado">
+              <select value={f.advisorId} onChange={(e) => setF({ ...f, advisorId: e.target.value })} required>
+                <option value="">—</option>
+                {advisors.data?.items.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </Field>
           )}

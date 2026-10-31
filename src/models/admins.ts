@@ -1,6 +1,6 @@
 import type { Queryable } from '../db';
 
-export type Role = 'superadmin' | 'company_admin';
+export type Role = 'superadmin' | 'company_admin' | 'supervisor' | 'advisor';
 
 export interface Admin {
   id: string;
@@ -8,6 +8,7 @@ export interface Admin {
   name: string;
   role: Role;
   company_id: string | null;
+  advisor_id: string | null;
   active: boolean;
   last_login_at: string | null;
 }
@@ -17,7 +18,7 @@ export interface AdminWithSecret extends Admin {
   locked_until: string | null;
 }
 
-const PUBLIC_COLS = 'id, email, name, role, company_id, active, last_login_at';
+const PUBLIC_COLS = 'id, email, name, role, company_id, advisor_id, active, last_login_at';
 
 export async function findAdminByEmail(q: Queryable, email: string): Promise<AdminWithSecret | null> {
   return (
@@ -32,12 +33,12 @@ export async function listAdmins(q: Queryable): Promise<Admin[]> {
 
 export async function createAdmin(
   q: Queryable,
-  d: { email: string; name: string; passwordHash: string; role: Role; companyId: string | null },
+  d: { email: string; name: string; passwordHash: string; role: Role; companyId: string | null; advisorId?: string | null },
 ): Promise<Admin> {
   return (
     await q.query<Admin>(
-      `INSERT INTO admins (email, name, password_hash, role, company_id) VALUES ($1, $2, $3, $4, $5) RETURNING ${PUBLIC_COLS}`,
-      [d.email, d.name, d.passwordHash, d.role, d.companyId],
+      `INSERT INTO admins (email, name, password_hash, role, company_id, advisor_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${PUBLIC_COLS}`,
+      [d.email, d.name, d.passwordHash, d.role, d.companyId, d.advisorId ?? null],
     )
   ).rows[0];
 }
@@ -96,7 +97,7 @@ export async function createAdminSession(
 
 export async function findAdminSession(q: Queryable, tokenHash: string): Promise<AdminSession | null> {
   const r = await q.query<any>(
-    `SELECT s.id AS session_id, s.csrf_token, a.id, a.email, a.name, a.role, a.company_id, a.active, a.last_login_at
+    `SELECT s.id AS session_id, s.csrf_token, a.id, a.email, a.name, a.role, a.company_id, a.advisor_id, a.active, a.last_login_at
      FROM admin_sessions s JOIN admins a ON a.id = s.admin_id
      WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND a.active`,
     [tokenHash],

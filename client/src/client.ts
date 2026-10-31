@@ -10,7 +10,7 @@ export type EventType = 'page_view' | 'chat_open' | 'button_click';
 
 export interface ChatReply {
   /** answer: respuesta con base en el sitio · handoff_offer: pasar con un asesor · fallback: el asistente no pudo responder. */
-  type: 'answer' | 'handoff_offer' | 'fallback';
+  type: 'answer' | 'handoff_offer' | 'fallback' | 'live';
   message: string;
   link?: { title: string; url: string };
   /**
@@ -19,7 +19,18 @@ export interface ChatReply {
    */
   waUrl?: string;
   handoffId?: string;
+  conversation?: { id: string; status: ConversationStatus };
 }
+export type ConversationStatus = 'BOT_ACTIVO' | 'EN_ESPERA_ASESOR' | 'TOMADO_POR_ASESOR' | 'REMITIDO_WHATSAPP' | 'CERRADO' | 'ABANDONADO';
+export interface ConversationMessage {
+  id: string; sender_type: 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM'; advisor_name?: string | null;
+  content: string; metadata?: { waUrl?: string }; created_at: string;
+}
+export interface ConversationSnapshot {
+  conversation: null | { id: string; status: ConversationStatus; portfolio_id: string | null; current_advisor_id: string | null };
+  messages: ConversationMessage[];
+}
+export interface ChatProfile { portfolioKey?: string; document?: string; name?: string; subject?: string }
 export interface PublicButton {
   key: string;
   label: string;
@@ -32,6 +43,7 @@ export interface PublicConfig {
   /** Hay al menos un asesor disponible para atender una derivación. */
   available: boolean;
   buttons: PublicButton[];
+  portfolios?: Array<{ key: string; name: string }>;
 }
 export interface HandoffInput {
   /** Botón pulsado; sin él se asigna cualquier asesor disponible (round robin). */
@@ -224,8 +236,48 @@ export class FontanaChatClient {
     }
   }
 
-  chat(message: string, history: Array<{ role: 'user' | 'assistant'; content: string }> = []): Promise<ChatReply> {
-    return this.authed<ChatReply>('POST', '/chat', { message, history: history.slice(-6) }, {}, this.chatTimeoutMs);
+  chat(message: string, history: Array<{ role: 'user' | 'assistant'; content: string }> = [], profile: ChatProfile = {}): Promise<ChatReply> {
+    return this.authed<ChatReply>('POST', '/chat', { message, history: history.slice(-6), live: true, ...profile }, {}, this.chatTimeoutMs);
+  }
+
+  /** Historial persistido y estado actual de la conversación de esta pestaña. */
+  getConversation(): Promise<ConversationSnapshot> {
+    return this.authed<ConversationSnapshot>('GET', '/conversation');
+  }
+
+  /**
+   * Mantiene el widget al día mientras un asesor responde. Devuelve una función para detenerlo.
+   * Usa WebSocket autenticado por subprotocolo; si el navegador/proxy no lo permite, usa sondeo corto.
+   */
+  watchConversation(onChange: (snapshot: ConversationSnapshot) => void, intervalMs = 1500): () => void {
+    let stopped = false;
+    let last = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | null = null;
+    const deliver = (snapshot: ConversationSnapshot) => {
+      const signature = `${snapshot.conversation?.status ?? ''}:${snapshot.messages.at(-1)?.id ?? ''}`;
+      if (!stopped && signature !== last) { last = signature; onChange(snapshot); }
+    };
+    const poll = async () => {
+      try { deliver(await this.getConversation()); } catch { /* el siguiente ciclo reintenta */ }
+      if (!stopped) timer = setTimeout(poll, Math.max(750, intervalMs));
+    };
+    const fallback = () => { if (!timer && !stopped) timer = setTimeout(poll, 0); };
+    void this.getSession().then((session) => {
+      if (stopped || typeof WebSocket === 'undefined') return fallback();
+      const url = new URL(`${this.base}/live`);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(url, ['fontanachat', `fc-token.${session.token}`]);
+      socket.addEventListener('message', (event) => {
+        try {
+          const packet = JSON.parse(String(event.data));
+          if (packet.type === 'snapshot') deliver(packet.data as ConversationSnapshot);
+        } catch { /* paquete inválido: se ignora */ }
+      });
+      socket.addEventListener('error', () => { socket?.close(); fallback(); });
+      socket.addEventListener('close', () => fallback());
+    }).catch(fallback);
+    return () => { stopped = true; clearTimeout(timer); socket?.close(1000, 'Widget cerrado'); };
   }
 
   /**

@@ -24,11 +24,15 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
 
 /** Evento que el servidor empuja al panel (ver /companies/:id/live). */
 export interface LiveEvent {
-  type: 'page_view' | 'chat_open' | 'button_click' | 'handoff_created' | 'whatsapp_click';
+  type: 'page_view' | 'chat_open' | 'button_click' | 'handoff_created' | 'whatsapp_click'
+    | 'conversation_created' | 'chat_message' | 'chat_status' | 'chat_portfolio' | 'chat_assignment' | 'advisor_status';
   at: string;
   data: Record<string, any>;
 }
-const LIVE_TYPES: LiveEvent['type'][] = ['page_view', 'chat_open', 'button_click', 'handoff_created', 'whatsapp_click'];
+const LIVE_TYPES: LiveEvent['type'][] = [
+  'page_view', 'chat_open', 'button_click', 'handoff_created', 'whatsapp_click',
+  'conversation_created', 'chat_message', 'chat_status', 'chat_portfolio', 'chat_assignment', 'advisor_status',
+];
 
 /**
  * Datos en vivo sin consultar la base: abre un canal SSE con la API y entrega cada evento a `onEvent`.

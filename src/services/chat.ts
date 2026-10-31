@@ -14,7 +14,7 @@ import type { LlmBudget } from './llmBudget';
 import { LlmUnavailableError, type LlmClient, type LlmMessage, type LlmMeta } from './ollama';
 
 export interface ChatReply {
-  type: 'answer' | 'handoff_offer' | 'fallback';
+  type: 'answer' | 'handoff_offer' | 'fallback' | 'live';
   message: string;
   link?: { title: string; url: string };
   /** Enlace de WhatsApp ya armado por el servidor cuando hay que pasar con un asesor (sin formulario). */
@@ -403,6 +403,8 @@ export interface ChatDeps {
   budget?: LlmBudget;
   /** Aviso en vivo al panel de las derivaciones que crea el chat. */
   notify?: LiveNotify;
+  /** En vez de crear una derivación inmediata a WhatsApp, deja la solicitud para atención dentro del chat web. */
+  liveEscalation?: boolean;
 }
 
 /** Respuestas ya generadas por pregunta, válidas mientras no cambie el contenido sincronizado (hash en la clave). */
@@ -427,6 +429,9 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
    * Si no hay ninguno disponible lo dice sin inventar nada.
    */
   const toAdvisor = async (lead: string): Promise<ChatReply> => {
+    if (deps.liveEscalation) {
+      return { type: 'handoff_offer', message: `${lead} Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.` };
+    }
     try {
       // Si el visitante nombra una cartera (p. ej. una entidad), se le pasa con los asesores de esa cartera.
       const wallet = await findPortfolioByText(deps.db, company.id, message);

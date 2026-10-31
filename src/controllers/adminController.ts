@@ -76,9 +76,10 @@ export function adminController(deps: AppDeps) {
     async createAdmin(req: Request, res: Response) {
       const b = parse(v.createAdminBody, req.body);
       if (b.companyId) must(await companies.getCompany(db, b.companyId), 'Empresa no encontrada');
+      if (b.advisorId) must(await catalog.getAdvisor(db, b.companyId!, b.advisorId), 'Asesor no encontrado en esta empresa');
       const hash = await hashPassword(b.password);
       const a = await audited(req, { companyId: b.companyId ?? null, entity: 'admin', action: 'create' }, async (q) => ({
-        after: await admins.createAdmin(q, { email: b.email, name: b.name, passwordHash: hash, role: b.role, companyId: b.companyId ?? null }),
+        after: await admins.createAdmin(q, { email: b.email, name: b.name, passwordHash: hash, role: b.role, companyId: b.companyId ?? null, advisorId: b.advisorId ?? null }),
       }));
       res.status(201).json(a);
     },

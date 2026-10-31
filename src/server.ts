@@ -6,6 +6,7 @@ import { listCompanies } from './models/companies';
 import { warmUpChat } from './services/chat';
 import { createLlmClient } from './services/llm';
 import type { LiveBus } from './services/liveEvents';
+import { attachLiveWebSocket } from './services/liveWebSocket';
 
 let cfg: ReturnType<typeof loadConfig>;
 let db: ReturnType<typeof createPgDb>;
@@ -29,6 +30,7 @@ const server = app.listen(cfg.port, cfg.host, () => {
   // Solo Ollama necesita precalentarse (carga el modelo en memoria); un proveedor alojado responde de inmediato.
   if (cfg.llmProvider === 'ollama' && cfg.llmEnabled) void warmUp();
 });
+const liveWebSocket = attachLiveWebSocket(server, { cfg, db, live: app.locals.live as LiveBus });
 
 /** Carga el modelo en memoria con el contenido de cada empresa, para que la primera pregunta real no espere ~20 s. */
 async function warmUp() {
@@ -43,7 +45,8 @@ async function warmUp() {
 
 async function shutdown(signal: string) {
   console.log(`${signal} recibido, cerrando...`);
-  (app.locals.live as LiveBus).closeAll(); // las conexiones SSE abiertas impedirían cerrar el servidor
+  liveWebSocket.close();
+  (app.locals.live as LiveBus).closeAll(); // las conexiones abiertas impedirían cerrar el servidor
   server.close(async () => {
     await db.close().catch(() => undefined);
     process.exit(0);

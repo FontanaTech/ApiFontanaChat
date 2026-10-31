@@ -79,6 +79,23 @@ Table advisors {
   updated_at timestamptz
 }
 
+Table advisor_portfolios {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  advisor_id uuid [not null, ref: > advisors.id]
+  portfolio_id uuid [not null, ref: > portfolios.id]
+  created_at timestamptz
+  indexes { (advisor_id, portfolio_id) [unique] }
+}
+
+Table advisor_status {
+  advisor_id uuid [pk, ref: > advisors.id]
+  company_id uuid [not null, ref: > companies.id]
+  status text [not null, note: 'available | busy | offline']
+  last_activity_at timestamptz
+  updated_at timestamptz
+}
+
 Table phones {
   id uuid [pk]
   company_id uuid [not null, ref: > companies.id]
@@ -120,6 +137,59 @@ Table public_sessions {
   device text [note: 'desktop | mobile | tablet | bot']
   created_at timestamptz
   expires_at timestamptz [not null]
+}
+
+Table chat_sessions {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  public_session_id uuid [not null, unique, ref: > public_sessions.id]
+  portfolio_id uuid [ref: > portfolios.id]
+  document text
+  visitor_name text
+  subject text
+  status text [not null, note: 'BOT_ACTIVO | EN_ESPERA_ASESOR | TOMADO_POR_ASESOR | REMITIDO_WHATSAPP | CERRADO | ABANDONADO']
+  current_advisor_id uuid [ref: > advisors.id]
+  pending_transfer_to uuid [ref: > advisors.id]
+  waiting_since timestamptz
+  taken_at timestamptz
+  started_at timestamptz
+  last_interaction_at timestamptz
+  closed_at timestamptz
+  close_reason text
+  summary text
+}
+
+Table chat_messages {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  chat_session_id uuid [not null, ref: > chat_sessions.id]
+  sender_type text [not null, note: 'USER | BOT | ADVISOR | SYSTEM']
+  advisor_id uuid [ref: > advisors.id]
+  content text [not null]
+  metadata jsonb
+  created_at timestamptz
+}
+
+Table chat_assignments {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  chat_session_id uuid [not null, ref: > chat_sessions.id]
+  advisor_id uuid [ref: > advisors.id]
+  target_advisor_id uuid [ref: > advisors.id]
+  action text [not null]
+  created_at timestamptz
+}
+
+Table chat_audit_logs {
+  id uuid [pk]
+  company_id uuid [not null, ref: > companies.id]
+  chat_session_id uuid [not null, ref: > chat_sessions.id]
+  admin_id uuid [ref: > admins.id]
+  advisor_id uuid [ref: > advisors.id]
+  action text [not null]
+  before_data jsonb
+  after_data jsonb
+  created_at timestamptz
 }
 
 Table handoffs {

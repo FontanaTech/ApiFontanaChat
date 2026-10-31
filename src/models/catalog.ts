@@ -22,12 +22,14 @@ export async function getAdvisor(q: Queryable, companyId: string, id: string): P
   return (await q.query<Advisor>(`SELECT ${ADVISOR_COLS} FROM advisors WHERE id = $1 AND company_id = $2`, [id, companyId])).rows[0] ?? null;
 }
 export async function createAdvisor(q: Queryable, companyId: string, name: string): Promise<Advisor> {
-  return (await q.query<Advisor>(`INSERT INTO advisors (company_id, name) VALUES ($1, $2) RETURNING ${ADVISOR_COLS}`, [companyId, name])).rows[0];
+  const advisor = (await q.query<Advisor>(`INSERT INTO advisors (company_id, name) VALUES ($1, $2) RETURNING ${ADVISOR_COLS}`, [companyId, name])).rows[0];
+  await q.query(`INSERT INTO advisor_status (advisor_id, company_id) VALUES ($1, $2) ON CONFLICT (advisor_id) DO NOTHING`, [advisor.id, companyId]);
+  return advisor;
 }
 export async function updateAdvisor(
   q: Queryable, companyId: string, id: string, d: { name?: string; active?: boolean },
 ): Promise<Advisor | null> {
-  return (
+  const advisor = (
     (
       await q.query<Advisor>(
         `UPDATE advisors SET name = COALESCE($3, name), active = COALESCE($4, active), updated_at = now()
@@ -36,6 +38,8 @@ export async function updateAdvisor(
       )
     ).rows[0] ?? null
   );
+  if (advisor && d.active === false) await q.query(`UPDATE advisor_status SET status = 'offline', updated_at = now() WHERE advisor_id = $1`, [advisor.id]);
+  return advisor;
 }
 
 /* ---------- teléfonos ---------- */
@@ -50,17 +54,22 @@ export async function getPhone(q: Queryable, companyId: string, id: string): Pro
 export async function createPhone(
   q: Queryable, companyId: string, d: { advisorId: string; number: string; label: string; isPrimary: boolean; portfolioId?: string | null },
 ): Promise<Phone> {
-  return (
+  const phone = (
     await q.query<Phone>(
       `INSERT INTO phones (company_id, advisor_id, number, label, is_primary, portfolio_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${PHONE_COLS}`,
       [companyId, d.advisorId, d.number, d.label, d.isPrimary, d.portfolioId ?? null],
     )
   ).rows[0];
+  if (phone.portfolio_id) await q.query(
+    `INSERT INTO advisor_portfolios (company_id, advisor_id, portfolio_id) VALUES ($1,$2,$3) ON CONFLICT (advisor_id, portfolio_id) DO NOTHING`,
+    [companyId, phone.advisor_id, phone.portfolio_id],
+  );
+  return phone;
 }
 export async function updatePhone(
   q: Queryable, companyId: string, id: string, d: { number?: string; label?: string; isPrimary?: boolean; active?: boolean; portfolioId?: string },
 ): Promise<Phone | null> {
-  return (
+  const phone = (
     (
       await q.query<Phone>(
         `UPDATE phones SET number = COALESCE($3, number), label = COALESCE($4, label),
@@ -71,6 +80,11 @@ export async function updatePhone(
       )
     ).rows[0] ?? null
   );
+  if (phone?.portfolio_id) await q.query(
+    `INSERT INTO advisor_portfolios (company_id, advisor_id, portfolio_id) VALUES ($1,$2,$3) ON CONFLICT (advisor_id, portfolio_id) DO NOTHING`,
+    [companyId, phone.advisor_id, phone.portfolio_id],
+  );
+  return phone;
 }
 
 /** Elimina el teléfono; las derivaciones previas conservan el número y quedan sin `phone_id`. Si era el principal, promueve otro del asesor. */

@@ -2,8 +2,9 @@ export interface Admin {
   id: string;
   email: string;
   name: string;
-  role: 'superadmin' | 'company_admin';
+  role: 'superadmin' | 'company_admin' | 'supervisor' | 'advisor';
   company_id: string | null;
+  advisor_id: string | null;
 }
 
 export class ApiFail extends Error {

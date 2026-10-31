@@ -3,7 +3,8 @@ import type { AppDeps } from '../app-types';
 import { adminController } from '../controllers/adminController';
 import { authController } from '../controllers/authController';
 import { publicController } from '../controllers/publicController';
-import { companyScope, limiter, publicGate, requireAdmin, requirePublicSession, requireSuperadmin } from '../middleware/security';
+import { liveChatController } from '../controllers/liveChatController';
+import { advisorPanelScope, companyScope, limiter, publicGate, requireAdmin, requirePublicSession, requireSuperadmin } from '../middleware/security';
 import { asyncHandler as h } from '../utils/errors';
 
 export function publicRouter(deps: AppDeps) {
@@ -18,6 +19,7 @@ export function publicRouter(deps: AppDeps) {
   r.get('/:slug/config', auth, h(c.config));
   r.post('/:slug/events', auth, h(c.event));
   r.post('/:slug/chat', limiter(windowMs, chat), auth, h(c.chat));
+  r.get('/:slug/conversation', auth, h(c.conversation));
   r.post('/:slug/handoffs', auth, h(c.createHandoff));
   r.post('/:slug/handoffs/:id/whatsapp-click', auth, h(c.whatsappClick));
   return r;
@@ -27,6 +29,7 @@ export function adminRouter(deps: AppDeps) {
   const r = Router();
   const a = adminController(deps);
   const au = authController(deps);
+  const liveChat = liveChatController(deps);
   const guard = requireAdmin(deps);
   const sup = requireSuperadmin;
 
@@ -44,7 +47,7 @@ export function adminRouter(deps: AppDeps) {
   r.post('/companies', guard, sup, h(a.createCompany));
 
   const co = Router({ mergeParams: true });
-  co.use(guard, companyScope(deps));
+  co.use(guard, companyScope(deps), advisorPanelScope);
   co.get('/', h(a.getCompany));
   co.patch('/', h(a.updateCompany));
   co.post('/content/sync', h(a.syncContent));
@@ -77,6 +80,19 @@ export function adminRouter(deps: AppDeps) {
   co.get('/events', h(a.events));
   co.get('/metrics', h(a.metrics));
   co.get('/audit', h(a.audit));
+
+  co.get('/chat-sessions', h(liveChat.list));
+  co.get('/chat-sessions/:chatId', h(liveChat.detail));
+  co.post('/chat-sessions/:chatId/take', h(liveChat.take));
+  co.post('/chat-sessions/:chatId/messages', h(liveChat.send));
+  co.patch('/chat-sessions/:chatId/portfolio', h(liveChat.changePortfolio));
+  co.post('/chat-sessions/:chatId/release', h(liveChat.release));
+  co.post('/chat-sessions/:chatId/transfer', h(liveChat.transfer));
+  co.post('/chat-sessions/:chatId/accept-transfer', h(liveChat.acceptTransfer));
+  co.post('/chat-sessions/:chatId/whatsapp', h(liveChat.whatsapp));
+  co.post('/chat-sessions/:chatId/close', h(liveChat.close));
+  co.get('/advisor-presence', h(liveChat.advisors));
+  co.patch('/advisor-presence/:advisorId', h(liveChat.setAdvisorStatus));
 
   r.use('/companies/:companyId', co);
   return r;

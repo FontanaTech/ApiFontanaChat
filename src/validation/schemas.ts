@@ -112,10 +112,12 @@ export const createAdminBody = z
     email: z.string().trim().toLowerCase().email().max(200),
     name: trimmed(1, 120),
     password: z.string().min(12).max(200),
-    role: z.enum(['superadmin', 'company_admin']),
+    role: z.enum(['superadmin', 'company_admin', 'supervisor', 'advisor']),
     companyId: uuid.nullable().optional(),
+    advisorId: uuid.nullable().optional(),
   })
-  .refine((v) => (v.role === 'company_admin' ? !!v.companyId : !v.companyId), 'company_admin requiere companyId; superadmin no lo lleva');
+  .refine((v) => (v.role === 'superadmin' ? !v.companyId && !v.advisorId : !!v.companyId), 'El rol requiere una empresa')
+  .refine((v) => (v.role === 'advisor' ? !!v.advisorId : !v.advisorId), 'advisor requiere advisorId; los demás roles no lo llevan');
 export const updateAdminBody = z
   .object({ name: trimmed(1, 120).optional(), active: z.boolean().optional(), password: z.string().min(12).max(200).optional() })
   .strict();
@@ -143,6 +145,26 @@ export const handoffBody = z.object({
   reason: trimmed(3, 300).optional(),
   idempotencyKey: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_\-:.]+$/).optional(),
 });
+
+export const liveChatBody = z.object({
+  message: trimmed(1, 4000),
+  history: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(4000) })).max(6).default([]),
+  live: z.boolean().default(false),
+  portfolioKey: slug.optional(),
+  document: z.string().trim().min(3).max(40).optional(),
+  name: trimmed(2, 80).optional(),
+  subject: z.string().trim().max(300).optional(),
+});
+
+export const chatStatus = z.enum(['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'TOMADO_POR_ASESOR', 'REMITIDO_WHATSAPP', 'CERRADO', 'ABANDONADO']);
+export const takeChatBody = z.object({ advisorId: uuid.optional() }).strict();
+export const advisorMessageBody = z.object({ message: trimmed(1, 4000) }).strict();
+export const changeChatPortfolioBody = z.object({ portfolioId: uuid }).strict();
+export const releaseChatBody = z.object({ destination: z.enum(['bot', 'queue']) }).strict();
+export const transferChatBody = z.object({ advisorId: uuid }).strict();
+export const closeChatBody = z.object({ reason: z.enum(['resuelto', 'remitido', 'abandono', 'informacion_entregada', 'otro']), summary: z.string().trim().max(1000).optional() }).strict();
+export const whatsappChatBody = z.object({ advisorId: uuid.optional(), summary: z.string().trim().max(500).optional() }).strict();
+export const advisorStatusBody = z.object({ status: z.enum(['available', 'busy', 'offline']) }).strict();
 
 export const contentSchema = z.object({
   slug: z.string().max(80).optional(),

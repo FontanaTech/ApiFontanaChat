@@ -75,6 +75,16 @@ export function companyScope(deps: AppDeps): RequestHandler {
   };
 }
 
+/** Un asesor usa únicamente la bandeja en vivo y lecturas auxiliares; no puede administrar la empresa. */
+export const advisorPanelScope: RequestHandler = (req, _res, next) => {
+  if (req.admin?.role !== 'advisor') return next();
+  const path = req.path;
+  const readAllowed = req.method === 'GET' && (path === '/' || path === '/live' || path === '/portfolios' || path.startsWith('/chat-sessions') || path === '/advisor-presence');
+  const actionAllowed = !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (path.startsWith('/chat-sessions/') || path.startsWith('/advisor-presence/'));
+  if (!readAllowed && !actionAllowed) return next(forbidden('El rol asesor solo puede usar la bandeja de chats en vivo'));
+  next();
+};
+
 /* ---------------- público ---------------- */
 /** Empresa + orígenes activos del slug, con caché corta (se invalida desde el panel). */
 async function loadSite(deps: AppDeps, slug: string): Promise<PublicSite | null> {

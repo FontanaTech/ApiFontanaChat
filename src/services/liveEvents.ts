@@ -2,8 +2,12 @@
  * Eventos en vivo para el panel (Server-Sent Events). Vive en memoria del proceso: publicar no toca la base de datos y,
  * sin nadie conectado, no hace nada. Con varias instancias del servicio habría que llevarlo a Postgres LISTEN/NOTIFY o Redis.
  */
-export type LiveEventName = 'page_view' | 'chat_open' | 'button_click' | 'handoff_created' | 'whatsapp_click';
-export const LIVE_EVENT_NAMES: readonly LiveEventName[] = ['page_view', 'chat_open', 'button_click', 'handoff_created', 'whatsapp_click'];
+export type LiveEventName = 'page_view' | 'chat_open' | 'button_click' | 'handoff_created' | 'whatsapp_click'
+  | 'conversation_created' | 'chat_message' | 'chat_status' | 'chat_portfolio' | 'chat_assignment' | 'advisor_status';
+export const LIVE_EVENT_NAMES: readonly LiveEventName[] = [
+  'page_view', 'chat_open', 'button_click', 'handoff_created', 'whatsapp_click',
+  'conversation_created', 'chat_message', 'chat_status', 'chat_portfolio', 'chat_assignment', 'advisor_status',
+];
 
 export interface LiveEvent {
   type: LiveEventName;
