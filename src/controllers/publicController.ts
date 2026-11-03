@@ -11,7 +11,16 @@ import { eligibleRecipients } from '../services/assignment';
 import { answerChat } from '../services/chat';
 import { createHandoff } from '../services/handoff';
 import { parseUserAgent, visitorHash } from '../utils/userAgent';
-import { finishBotTurn, publicConversation, startUserTurn } from '../services/liveChat';
+import { dataRequestState, finishBotTurn, publicConversation, saveVisitorName, startUserTurn } from '../services/liveChat';
+
+/** Veces que el bot pide datos de identificación antes de pasar el caso a un asesor. */
+const MAX_DATA_REQUESTS = 3;
+
+function dataRequestText(field: 'name' | 'document' | 'portfolio', portfolios: string[]): string {
+  if (field === 'name') return 'Para atenderte mejor, ¿me cuentas cómo te llamas?';
+  if (field === 'document') return 'Si me compartes tu número de documento, un asesor podrá ubicar tu caso más rápido.';
+  return `¿Con cuál de estas áreas o carteras está relacionada tu consulta? ${portfolios.join(', ')}.`;
+}
 
 function parse<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const r = schema.safeParse(data);
@@ -103,28 +112,38 @@ export function publicController(deps: AppDeps) {
           : 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: turn.conversation.status } });
         return;
       }
-      if (!turn.conversation.document || !turn.conversation.portfolio_id) {
-        let prompt = 'Para identificar tu solicitud, escribe tu número de documento.';
-        if (turn.conversation.document && !turn.conversation.portfolio_id) {
-          const portfolios = await listPortfolios(deps.db, company.id, true);
-          prompt = `¿Con cuál cartera está relacionada tu consulta? ${portfolios.map((p) => p.name).join(', ')}.`;
-        }
-        const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, prompt);
-        if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
-        res.json({ type: 'answer', message: prompt, conversation: { id: turn.conversation.id, status: saved.conversation.status } });
-        return;
+      // Si el bot había pedido el nombre, la respuesta del visitante es el nombre.
+      const requests = await dataRequestState(deps.db, company.id, turn.conversation.id);
+      if (!turn.conversation.visitor_name && requests.last === 'name') {
+        turn.conversation.visitor_name = await saveVisitorName(deps.db, company.id, turn.conversation.id, body.message);
       }
       const reply = await answerChat({
         db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore,
         budget: deps.budget, notify: deps.live.publish, liveEscalation: true,
       }, company, session!, body.message, body.history);
-      const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, reply.message, reply.type !== 'answer');
+      // Datos de identificación que faltan: se piden de forma amable, de a uno, junto con la respuesta del bot.
+      const missing = !turn.conversation.visitor_name ? 'name' : !turn.conversation.document ? 'document' : !turn.conversation.portfolio_id ? 'portfolio' : null;
+      let text = reply.message;
+      let escalate = reply.type !== 'answer';
+      let metadata: Record<string, unknown> = {};
+      if (!escalate && missing) {
+        if (requests.asked >= MAX_DATA_REQUESTS) {
+          // El visitante no completó los datos: el caso pasa a un asesor/líder del panel, que los pedirá.
+          escalate = true;
+          text = `${reply.message} Un asesor continuará tu caso por este mismo chat y te ayudará con los datos que falten.`;
+        } else {
+          const portfolios = missing === 'portfolio' ? await listPortfolios(deps.db, company.id, true) : [];
+          text = `${reply.message} ${dataRequestText(missing, portfolios.map((p) => p.name))}`;
+          metadata = { kind: 'data_request', field: missing };
+        }
+      }
+      const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, text, escalate, metadata);
       if (saved.message) deps.live.publish(company.id, 'chat_message', {
         conversationId: turn.conversation.id, messageId: saved.message.id, sender: saved.message.sender_type,
       });
       if (saved.conversation.status !== 'BOT_ACTIVO') deps.live.publish(company.id, 'chat_status', { conversationId: turn.conversation.id, status: saved.conversation.status });
       res.json(saved.conversation.status === 'BOT_ACTIVO'
-        ? { ...reply, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
+        ? { ...reply, message: text, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
         : { type: 'live', message: saved.message?.content ?? 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
     },
 

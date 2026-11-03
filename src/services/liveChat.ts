@@ -81,7 +81,7 @@ export async function startUserTurn(
   });
 }
 
-export async function finishBotTurn(db: Db, companyId: string, conversationId: string, content: string, escalate = false) {
+export async function finishBotTurn(db: Db, companyId: string, conversationId: string, content: string, escalate = false, metadata: Record<string, unknown> = {}) {
   return db.tx(async (q) => {
     const current = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [conversationId, companyId])).rows[0];
     if (!current) throw notFound('Conversación no encontrada');
@@ -99,12 +99,30 @@ export async function finishBotTurn(db: Db, companyId: string, conversationId: s
       return { conversation, message: system };
     }
     const message = (await q.query<ChatMessage>(
-      `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content) VALUES ($1,$2,'BOT',$3) RETURNING *`,
-      [companyId, conversationId, content],
+      `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content, metadata) VALUES ($1,$2,'BOT',$3,$4::jsonb) RETURNING *`,
+      [companyId, conversationId, content, JSON.stringify(metadata)],
     )).rows[0];
     await q.query('UPDATE chat_sessions SET last_interaction_at = now(), updated_at = now() WHERE id = $1', [conversationId]);
     return { conversation: current, message };
   });
+}
+
+/** Solicitudes de datos que el bot ya hizo en esta conversación (para no insistir sin fin) y la última pedida. */
+export async function dataRequestState(q: Queryable, companyId: string, conversationId: string): Promise<{ asked: number; last: string | null }> {
+  const r = await q.query<{ field: string | null }>(
+    `SELECT metadata->>'field' AS field FROM chat_messages
+     WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'kind' = 'data_request'
+     ORDER BY created_at DESC, id DESC`, [companyId, conversationId],
+  );
+  return { asked: r.rows.length, last: r.rows[0]?.field ?? null };
+}
+
+/** Si el visitante respondió al "¿cómo te llamas?", guarda el nombre (corto y sin números). */
+export async function saveVisitorName(q: Queryable, companyId: string, conversationId: string, text: string): Promise<string | null> {
+  const name = text.replace(/^(me llamo|mi nombre es|soy)\s+/i, '').trim();
+  if (name.length < 2 || name.length > 60 || /\d/.test(name) || name.split(/\s+/).length > 5) return null;
+  await q.query('UPDATE chat_sessions SET visitor_name = COALESCE(visitor_name, $3), updated_at = now() WHERE id = $1 AND company_id = $2', [conversationId, companyId, name]);
+  return name;
 }
 
 export async function publicConversation(q: Queryable, companyId: string, publicSessionId: string) {
