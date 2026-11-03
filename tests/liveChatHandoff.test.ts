@@ -116,3 +116,14 @@ describe('seed de demostración', () => {
   });
 });
 
+
+describe('bandeja en vivo e historial', () => {
+  it('separa lo activo de lo remitido o abandonado', async () => {
+    const live = await manager.get(`/companies/${fixture.companyId}/chat-sessions?view=live`);
+    const history = await manager.get(`/companies/${fixture.companyId}/chat-sessions?view=history`);
+    expect(live.status).toBe(200);
+    expect(live.body.items.every((x: any) => ['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'TOMADO_POR_ASESOR'].includes(x.status))).toBe(true);
+    expect(history.body.items.every((x: any) => ['REMITIDO_WHATSAPP', 'CERRADO', 'ABANDONADO'].includes(x.status))).toBe(true);
+    expect(history.body.items.map((x: any) => x.id)).toContain(conversationId);
+  });
+});

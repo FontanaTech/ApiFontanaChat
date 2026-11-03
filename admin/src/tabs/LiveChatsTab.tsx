@@ -11,7 +11,7 @@ const LABELS: Record<Status, string> = { BOT_ACTIVO: 'Bot activo', EN_ESPERA_ASE
 const ago = (n: number) => n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)} min` : `${Math.floor(n / 3600)} h`;
 
 export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: Admin }) {
-  const [filters, setFilters] = useState({ status: '', portfolioId: '', advisorId: '', search: '', from: '', to: '', pending: false });
+  const [filters, setFilters] = useState({ view: 'live', status: '', portfolioId: '', advisorId: '', search: '', from: '', to: '', pending: false });
   const [selected, setSelected] = useState('');
   const [takeAdvisor, setTakeAdvisor] = useState(admin.advisor_id ?? '');
   const [portfolio, setPortfolio] = useState('');
@@ -48,11 +48,15 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
       <LiveBadge online={online} />
     </div>
     <ErrorBox msg={sessions.error || detail.error || advisors.error || portfolios.error || action.error} />
+    <div className="inline compact" role="tablist" aria-label="Vista">
+      <button role="tab" aria-selected={filters.view === 'live'} className={filters.view === 'live' ? 'primary' : ''} onClick={() => { setFilters((f) => ({ ...f, view: 'live', status: '' })); setSelected(''); }}>En vivo</button>
+      <button role="tab" aria-selected={filters.view === 'history'} className={filters.view === 'history' ? 'primary' : ''} onClick={() => { setFilters((f) => ({ ...f, view: 'history', status: '', pending: false })); setSelected(''); }}>Historial (remitidos y abandonados)</button>
+    </div>
     <div className="live-filters">
       <input aria-label="Buscar" placeholder="Usuario o documento" value={filters.search} onChange={(e) => setFilter('search', e.target.value)} />
       <select aria-label="Estado" value={filters.status} onChange={(e) => setFilter('status', e.target.value)}>
         <option value="">Todos los estados</option>
-        {Object.entries(LABELS).map(([key, value]) => <option key={key} value={key}>{value}</option>)}
+        {Object.entries(LABELS).filter(([key]) => (filters.view === 'live') === ['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'TOMADO_POR_ASESOR'].includes(key)).map(([key, value]) => <option key={key} value={key}>{value}</option>)}
       </select>
       <select aria-label="Cartera" value={filters.portfolioId} onChange={(e) => setFilter('portfolioId', e.target.value)}>
         <option value="">Todas las carteras</option>
@@ -62,7 +66,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
         <option value="">Todos los asesores</option>
         {advisors.data?.items.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
       </select>
-      <label><input type="checkbox" checked={filters.pending} onChange={(e) => setFilter('pending', e.target.checked)} />Solo pendientes</label>
+      {filters.view === 'live' && <label><input type="checkbox" checked={filters.pending} onChange={(e) => setFilter('pending', e.target.checked)} />Solo pendientes</label>}
       <input type="datetime-local" aria-label="Desde" value={filters.from} onChange={(e) => setFilter('from', e.target.value)} />
       <input type="datetime-local" aria-label="Hasta" value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
     </div>

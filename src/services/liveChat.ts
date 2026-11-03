@@ -204,6 +204,9 @@ export async function listConversations(q: Queryable, companyId: string, admin: 
     values.push(value);
     where += ` AND ${sql.split('?').join(`$${values.length}`)}`;
   };
+  // Vista "live": solo lo que sigue en curso. Vista "history": remitidos, cerrados y abandonados (siguen guardados en la base).
+  if (filters.view === 'live') where += ` AND s.status IN ('BOT_ACTIVO','EN_ESPERA_ASESOR','TOMADO_POR_ASESOR')`;
+  if (filters.view === 'history') where += ` AND s.status IN ('REMITIDO_WHATSAPP','CERRADO','ABANDONADO')`;
   if (filters.status) add('s.status = ?', filters.status);
   if (filters.portfolioId) add('s.portfolio_id = ?::uuid', filters.portfolioId);
   if (filters.advisorId) add('s.current_advisor_id = ?::uuid', filters.advisorId);

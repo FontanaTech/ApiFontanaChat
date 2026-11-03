@@ -27,6 +27,7 @@ export function liveChatController(deps: AppDeps) {
   return {
     async list(req: Request, res: Response) {
       const filters = {
+        view: req.query.view === 'live' || req.query.view === 'history' ? req.query.view : undefined,
         status: typeof req.query.status === 'string' ? req.query.status : undefined,
         portfolioId: typeof req.query.portfolioId === 'string' ? req.query.portfolioId : undefined,
         advisorId: typeof req.query.advisorId === 'string' ? req.query.advisorId : undefined,
