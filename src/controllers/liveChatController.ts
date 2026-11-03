@@ -85,14 +85,28 @@ export function liveChatController(deps: AppDeps) {
       const result = await deps.db.tx(async (q) => {
         const before = await lockConversation(q, cid(req), chatId(req));
         if (!['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(before.status)) throw conflict('La conversación ya está tomada o finalizada');
-        const advisorId = req.admin!.role === 'advisor' ? actorAdvisor(req.admin!) : body.advisorId;
-        if (!advisorId) throw badRequest('Selecciona el asesor que tomará la conversación');
+        // Tomar control no pide elegir asesor: se usa el vinculado a la cuenta o, si no hay, el menos cargado de la cartera (o cualquiera activo).
+        let advisorId = req.admin!.role === 'advisor' ? actorAdvisor(req.admin!) : (body.advisorId ?? req.admin!.advisor_id ?? null);
+        if (!advisorId) {
+          advisorId = (await q.query<{ id: string }>(
+            `SELECT a.id FROM advisors a
+             LEFT JOIN advisor_portfolios ap ON ap.advisor_id = a.id AND ap.company_id = a.company_id AND ap.portfolio_id = $2
+             LEFT JOIN chat_sessions c ON c.current_advisor_id = a.id AND c.status = 'TOMADO_POR_ASESOR'
+             WHERE a.company_id = $1 AND a.active
+             GROUP BY a.id, ap.portfolio_id, a.created_at ORDER BY (ap.portfolio_id IS NULL), count(c.id), a.created_at LIMIT 1`, [cid(req), before.portfolio_id],
+          )).rows[0]?.id ?? null;
+        }
+        if (!advisorId) throw badRequest('No hay asesores creados: agrega uno en «Asesores y números»');
         const eligible = await q.query<any>(
           `SELECT a.id, COALESCE(s.status, 'offline') AS status FROM advisors a
            LEFT JOIN advisor_status s ON s.advisor_id = a.id WHERE a.id = $1 AND a.company_id = $2 AND a.active`, [advisorId, cid(req)],
         );
         if (!eligible.rows[0]) throw notFound('Asesor no encontrado');
-        if (eligible.rows[0].status === 'offline') throw conflict('El asesor está desconectado');
+        // Tomar el chat implica estar atendiendo: si estaba desconectado, queda disponible.
+        if (eligible.rows[0].status === 'offline') {
+          await q.query(`INSERT INTO advisor_status (advisor_id, company_id, status, last_activity_at, updated_at) VALUES ($1,$2,'available',now(),now())
+            ON CONFLICT (advisor_id) DO UPDATE SET status = 'available', last_activity_at = now(), updated_at = now()`, [advisorId, cid(req)]);
+        }
         if (before.portfolio_id) {
           const access = await q.query('SELECT 1 FROM advisor_portfolios WHERE company_id = $1 AND advisor_id = $2 AND portfolio_id = $3', [cid(req), advisorId, before.portfolio_id]);
           if (!access.rows[0]) throw forbidden('El asesor no está autorizado para esta cartera');

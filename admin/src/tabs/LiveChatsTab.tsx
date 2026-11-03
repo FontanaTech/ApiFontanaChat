@@ -13,7 +13,6 @@ const ago = (n: number) => n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)} 
 export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: Admin }) {
   const [filters, setFilters] = useState({ view: 'live', status: '', portfolioId: '', advisorId: '', search: '', from: '', to: '', pending: false });
   const [selected, setSelected] = useState('');
-  const [takeAdvisor, setTakeAdvisor] = useState(admin.advisor_id ?? '');
   const [portfolio, setPortfolio] = useState('');
   const [transferTo, setTransferTo] = useState('');
   const [draft, setDraft] = useState('');
@@ -43,7 +42,6 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
   const current = detail.data?.conversation;
   const allowed = (advisors.data?.items ?? []).filter((a) => !current?.portfolio_id || a.portfolio_ids.includes(current.portfolio_id));
   const run = (path: string, body: unknown = {}) => action.run(() => api('POST', `/companies/${companyId}/chat-sessions/${selected}${path}`, body));
-  const needsAdvisorPick = admin.role !== 'advisor' && !admin.advisor_id;
   const remitWhatsapp = () => {
     if (customWa && !waText.trim()) { alert('Escribe el mensaje personalizado o desactívalo en «Más opciones».'); return; }
     void run('/whatsapp', customWa ? { message: waText.trim() } : {});
@@ -118,8 +116,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
               </label>
               : <>
                 {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <>
-                  {needsAdvisorPick && <select aria-label="Asesor que tomará el chat" value={takeAdvisor} onChange={(e) => setTakeAdvisor(e.target.value)}><option value="">Seleccionar asesor</option>{allowed.filter((a) => a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>}
-                  <button className="primary" disabled={needsAdvisorPick && !takeAdvisor} onClick={() => run('/take', takeAdvisor ? { advisorId: takeAdvisor } : {})}>Tomar control</button>
+                  <button className="primary" onClick={() => run('/take')}>Tomar control</button>
                   <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>
                 </>}
                 {current.status === 'TOMADO_POR_ASESOR' && <>

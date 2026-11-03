@@ -131,3 +131,16 @@ describe('bandeja en vivo e historial', () => {
     expect(history.body.items.map((x: any) => x.id)).toContain(conversationId);
   });
 });
+
+describe('tomar control sin elegir asesor', () => {
+  it('un gestor sin asesor vinculado toma el chat y puede responder', async () => {
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    const first = await guest.post('/chat', { message: 'hola', live: true, name: 'Cliente Dos', document: '20000002', portfolioKey: 'general' });
+    const id = first.body.conversation.id;
+    const taken = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${id}/take`, {});
+    expect(taken.status).toBe(200);
+    expect(taken.body.conversation.status).toBe('TOMADO_POR_ASESOR');
+    const reply = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${id}/messages`, { message: 'Hola, te atiendo' });
+    expect(reply.status).toBe(201);
+  });
+});
