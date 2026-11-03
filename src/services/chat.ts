@@ -27,6 +27,9 @@ const HUMAN_RE = /\b(humano|persona real|asesor|asesora|agente|operador|hablar c
 const SENSITIVE_RE =
   /\b(pago|pagos|pagar|pague|abono|abonar|acuerdo|acuerdos|negociar|negociacion|saldo|saldos|deuda|deudas|paz y salvo|juridic[oa]s?|demanda|embargo|abogado|legal|legales|cedula|mi caso|mi cuenta|mi obligacion|mi credito|mi proceso)\b/;
 const GREETING_RE = /^(hola|buenas|buenos dias|buen dia|buenas tardes|buenas noches|hey|gracias)\b/;
+/** Preguntas sobre el propio asistente: se responden siempre igual, sin modelo y sin pasar a un asesor. */
+const IDENTITY_RE = /\b(que|quien) (eres|sos|es este chat)\b|\bquien eres tu\b|\beres (un |una )?(bot|robot|ia|inteligencia artificial|humano|persona|asistente)\b|\bcomo te llamas\b|\bcon quien (hablo|estoy hablando)\b|\bque haces\b/;
+const THANKS_RE = /^(muchas )?gracias\b|^(listo )?(ok|vale|perfecto|excelente)\b.{0,15}$|^(adios|chao|hasta luego|nos vemos)\b/;
 const STOP = new Set(['para', 'como', 'cual', 'cuales', 'donde', 'cuando', 'quiero', 'puedo', 'tiene', 'tienen', 'sobre', 'esta', 'este', 'esto', 'unos', 'unas', 'pero', 'porque', 'hacer', 'favor', 'estan', 'estoy', 'pueden', 'puede', 'quien', 'ustedes']);
 
 const NONE = 'En este momento no hay asesores disponibles. Por favor intenta de nuevo más tarde.';
@@ -447,6 +450,12 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   };
 
   const nm = normalize(message);
+  if (IDENTITY_RE.test(nm)) {
+    return { type: 'answer', message: `Soy el asistente virtual de ${company.name}. Puedo contarte sobre nuestros servicios y, si lo necesitas, comunicarte con un asesor.` };
+  }
+  if (THANKS_RE.test(nm) && nm.length <= 40) {
+    return { type: 'answer', message: '¡Con gusto! Si necesitas algo más, aquí estoy.' };
+  }
   if (HUMAN_RE.test(nm)) return toAdvisor(pick(HUMAN_LEADS));
   if (SENSITIVE_RE.test(nm)) return toAdvisor(pick(SENSITIVE_LEADS));
   if (GREETING_RE.test(nm) && nm.length <= 30) {

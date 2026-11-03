@@ -151,7 +151,7 @@ export function publicController(deps: AppDeps) {
         // El bot no puede resolverlo: antes de pasar a un asesor reúne nombre, documento y cartera.
         const gaps = await handoffGaps(deps.db, company.id, turn.conversation);
         if (gaps.missing.length > 0 && gaps.asked < MAX_HANDOFF_DATA_REQUESTS) {
-          text = handoffDataPrompt(gaps.missing, gaps.portfolios, 'Para que un asesor pueda ayudarte con esto,');
+          text = handoffDataPrompt(gaps.missing, gaps.portfolios, 'Esa consulta la atiende mejor un asesor. Para conectarte con uno,');
           metadata = { kind: 'data_request', field: 'handoff' };
         } else {
           escalate = true;

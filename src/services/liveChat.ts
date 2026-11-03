@@ -60,7 +60,8 @@ function nameFromReply(message: string, terms: string[]): string | null {
   return t;
 }
 
-const HUMAN_RE = /\b(asesor|asesora|agente|persona|humano|representante|hablar con alguien|atencion humana)\b/i;
+// "Eres una persona?" o "persona natural" no son una solicitud de asesor; "hablar con una persona" sí.
+const HUMAN_RE = /\b(asesor|asesora|agente|representante|hablar con (alguien|una persona|un humano)|(atencion|atención) humana|persona real|quiero (una |un )?(persona|humano))\b/i;
 
 async function portfolioId(q: Queryable, companyId: string, key?: string): Promise<string | null> {
   if (!key) return null;
@@ -185,6 +186,8 @@ export async function dataRequestState(q: Queryable, companyId: string, conversa
 export async function saveVisitorName(q: Queryable, companyId: string, conversationId: string, text: string): Promise<string | null> {
   const name = text.replace(/^(me llamo|mi nombre es|soy)\s+/i, '').trim();
   if (name.length < 2 || name.length > 60 || /\d/.test(name) || name.split(/\s+/).length > 5) return null;
+  // Una pregunta o una solicitud no es un nombre.
+  if (/[?¿]/.test(name) || /^(que|qué|quien|quién|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quiero|necesito|puedo|tienen|hola)\b/i.test(name) || HUMAN_RE.test(normalize(name))) return null;
   await q.query('UPDATE chat_sessions SET visitor_name = COALESCE(visitor_name, $3), updated_at = now() WHERE id = $1 AND company_id = $2', [conversationId, companyId, name]);
   return name;
 }

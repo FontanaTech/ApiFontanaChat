@@ -158,3 +158,14 @@ describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
     expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
   });
 });
+
+describe('consistencia de las respuestas del bot', () => {
+  it('responde quién es sin pedir datos ni pasar a un asesor', async () => {
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    for (const q of ['que eres', 'Quién eres tú?', 'eres una persona?']) {
+      const r = await guest.post('/chat', { message: q, live: true });
+      expect(r.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+      expect(r.body.message).toMatch(/asistente virtual/i);
+    }
+  });
+});
