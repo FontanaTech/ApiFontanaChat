@@ -20,6 +20,7 @@ export function publicRouter(deps: AppDeps) {
   r.post('/:slug/events', auth, h(c.event));
   r.post('/:slug/chat', limiter(windowMs, chat), auth, h(c.chat));
   r.get('/:slug/conversation', auth, h(c.conversation));
+  r.post('/:slug/conversation/ping', auth, h(c.ping));
   r.post('/:slug/handoffs', auth, h(c.createHandoff));
   r.post('/:slug/handoffs/:id/whatsapp-click', auth, h(c.whatsappClick));
   return r;

@@ -30,12 +30,16 @@ describe('toma de control del chatbot', () => {
     expect(hello.status).toBe(200);
     expect(hello.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
 
-    const human = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
+    // Pide un asesor sin haber indicado la cartera: primero se le piden los datos que faltan.
+    const ask = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
+    expect(ask.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(ask.body.message).toMatch(/cartera/i);
+    const human = await visitor.post('/chat', { message: 'general', live: true });
     expect(human.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
     conversationId = human.body.conversation.id;
     const snapshot = await visitor.get('/conversation');
     expect(snapshot.body.conversation).toMatchObject({ id: conversationId, visitor_name: 'Visitante Demo', document: '10000001' });
-    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER']);
+    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER', 'BOT', 'USER']);
   });
 
   it('un asesor toma el chat de forma exclusiva y el bot queda pausado', async () => {

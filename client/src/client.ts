@@ -240,6 +240,11 @@ export class FontanaChatClient {
     return this.authed<ChatReply>('POST', '/chat', { message, history: history.slice(-6), live: true, ...profile }, {}, this.chatTimeoutMs);
   }
 
+  /** Avisa que el visitante sigue activo en la página (llamar con throttle, p. ej. cada 30 s con actividad). Nunca lanza. */
+  async ping(): Promise<void> {
+    try { await this.authed('POST', '/conversation/ping', {}); } catch { /* ignorado a propósito */ }
+  }
+
   /** Historial persistido y estado actual de la conversación de esta pestaña. */
   getConversation(): Promise<ConversationSnapshot> {
     return this.authed<ConversationSnapshot>('GET', '/conversation');

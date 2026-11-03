@@ -21,6 +21,21 @@ export interface ChatMessage {
   advisor_name?: string | null; content: string; metadata?: Record<string, unknown>; created_at: string;
 }
 
+const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS NOT NULL AND current_advisor_id IS NULL THEN 'EN_ESPERA_ASESOR' ELSE 'BOT_ACTIVO' END,
+  last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`;
+
+/** Veces que se piden nombre, documento y cartera a quien solicita un asesor antes de pasarlo igual a la cola. */
+const MAX_HANDOFF_DATA_REQUESTS = 2;
+
+/** Extrae el nombre de una respuesta como "Juan Pérez 1002003 Flamingo" quitando documento y cartera. */
+function nameFromReply(message: string, terms: string[]): string | null {
+  let t = message.replace(/\d+/g, ' ');
+  for (const term of terms) if (term) t = t.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
+  t = t.replace(/\b(me llamo|mi nombre es|soy|nombre|documento|cedula|cédula|cc|cartera|area|área)\b/gi, ' ').replace(/[,.;:-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length < 2 || t.length > 60 || t.split(' ').length > 5 || HUMAN_RE.test(normalize(t))) return null;
+  return t;
+}
+
 const HUMAN_RE = /\b(asesor|asesora|agente|persona|humano|representante|hablar con alguien|atencion humana)\b/i;
 
 async function portfolioId(q: Queryable, companyId: string, key?: string): Promise<string | null> {
@@ -52,32 +67,58 @@ export async function ensureConversation(
 export async function startUserTurn(
   db: Db, company: Company, publicSession: PublicSession, message: string,
   profile: { portfolioKey?: string; document?: string; name?: string; subject?: string } = {},
-): Promise<{ conversation: LiveChatSession; message: ChatMessage; botMayReply: boolean; escalated: boolean; created: boolean }> {
+): Promise<{ conversation: LiveChatSession; message: ChatMessage; botMayReply: boolean; escalated: boolean; created: boolean; needsData: { missing: Array<'name' | 'document' | 'portfolio'>; portfolios: string[] } | null }> {
   return db.tx(async (q) => {
     const existed = await q.query('SELECT 1 FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [company.id, publicSession.id]);
     const inferred = { ...profile };
+    const portfolios = (await q.query<{ key: string; name: string; aliases: string[] }>('SELECT key, name, aliases FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id])).rows;
     if (!inferred.document) inferred.document = message.match(/\b\d{5,15}\b/)?.[0];
     if (!inferred.portfolioKey) {
       const text = normalize(message);
-      const portfolios = await q.query<{ key: string; name: string; aliases: string[] }>('SELECT key, name, aliases FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id]);
-      inferred.portfolioKey = portfolios.rows.find((p) => [p.key, p.name, ...(p.aliases ?? [])].some((term) => text.includes(normalize(term))))?.key;
+      inferred.portfolioKey = portfolios.find((p) => [p.key, p.name, ...(p.aliases ?? [])].some((term) => text.includes(normalize(term))))?.key;
     }
     if (!inferred.subject && !/^\s*(hola|buenas|buenos dias)\b/i.test(normalize(message))) inferred.subject = message.slice(0, 300);
     const initial = await ensureConversation(q, company.id, publicSession.id, inferred);
-    const locked = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [initial.id, company.id])).rows[0];
+    let locked = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [initial.id, company.id])).rows[0];
+    // El visitante volvió tras ser marcado como ausente: la conversación se reabre donde estaba.
+    if (locked.status === 'ABANDONADO') locked = (await q.query<LiveChatSession>(REOPEN_SQL, [locked.id, company.id])).rows[0];
     if (locked.status === 'CERRADO' || locked.status === 'REMITIDO_WHATSAPP') throw conflict('La conversación ya finalizó');
-    const escalate = HUMAN_RE.test(message) && locked.status === 'BOT_ACTIVO';
+    let current = locked;
+    let escalate = false;
+    let needsData: { missing: Array<'name' | 'document' | 'portfolio'>; portfolios: string[] } | null = null;
+    if (locked.status === 'BOT_ACTIVO') {
+      // Si el bot ya pidió los datos para pasar con un asesor, esta respuesta los completa.
+      const lastBot = (await q.query<{ field: string | null }>(
+        `SELECT metadata->>'field' AS field FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT'
+         ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, locked.id])).rows[0];
+      const awaiting = lastBot?.field === 'handoff';
+      if (awaiting && !current.visitor_name) {
+        const name = nameFromReply(message, portfolios.flatMap((p) => [p.key, p.name, ...(p.aliases ?? [])]));
+        if (name) current = (await q.query<LiveChatSession>('UPDATE chat_sessions SET visitor_name = $3, updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *', [locked.id, company.id, name])).rows[0];
+      }
+      if (HUMAN_RE.test(message) || awaiting) {
+        const missing: Array<'name' | 'document' | 'portfolio'> = [];
+        if (!current.visitor_name) missing.push('name');
+        if (!current.document) missing.push('document');
+        if (!current.portfolio_id && portfolios.length > 0) missing.push('portfolio');
+        const asked = (await q.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'field' = 'handoff'`,
+          [company.id, locked.id])).rows[0].n;
+        if (missing.length === 0 || asked >= MAX_HANDOFF_DATA_REQUESTS) escalate = true;
+        else needsData = { missing, portfolios: portfolios.map((p) => p.name) };
+      }
+    }
     const nextStatus = escalate ? 'EN_ESPERA_ASESOR' : locked.status;
     const conversation = (await q.query<LiveChatSession>(
       `UPDATE chat_sessions SET status = $3, waiting_since = CASE WHEN $3 = 'EN_ESPERA_ASESOR' THEN COALESCE(waiting_since, now()) ELSE waiting_since END,
-         last_interaction_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
+         last_interaction_at = now(), last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
       [locked.id, company.id, nextStatus],
     )).rows[0];
     const saved = (await q.query<ChatMessage>(
       `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content) VALUES ($1,$2,'USER',$3) RETURNING *`,
       [company.id, locked.id, message],
     )).rows[0];
-    return { conversation, message: saved, botMayReply: nextStatus === 'BOT_ACTIVO', escalated: escalate, created: existed.rows.length === 0 };
+    return { conversation, message: saved, botMayReply: nextStatus === 'BOT_ACTIVO', escalated: escalate, created: existed.rows.length === 0, needsData };
   });
 }
 
@@ -125,6 +166,13 @@ export async function saveVisitorName(q: Queryable, companyId: string, conversat
   return name;
 }
 
+/** La página avisa que el visitante sigue activo (en cualquier parte del sitio). Si estaba marcado como ausente, se reabre. */
+export async function touchConversation(q: Queryable, companyId: string, publicSessionId: string): Promise<{ status: ChatStatus | null; reopened: boolean }> {
+  const r = await q.query<LiveChatSession>('UPDATE chat_sessions SET last_seen_at = now() WHERE company_id = $1 AND public_session_id = $2 RETURNING *', [companyId, publicSessionId]);
+  if (r.rows[0]?.status === 'ABANDONADO') return { status: (await q.query<LiveChatSession>(REOPEN_SQL, [r.rows[0].id, companyId])).rows[0].status, reopened: true };
+  return { status: r.rows[0]?.status ?? null, reopened: false };
+}
+
 export async function publicConversation(q: Queryable, companyId: string, publicSessionId: string) {
   const conversation = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [companyId, publicSessionId])).rows[0] ?? null;
   if (!conversation) return { conversation: null, messages: [] as ChatMessage[] };
@@ -147,7 +195,7 @@ export async function listConversations(q: Queryable, companyId: string, admin: 
   await q.query(
     `UPDATE chat_sessions SET status = 'ABANDONADO', updated_at = now()
      WHERE company_id = $1 AND status IN ('BOT_ACTIVO','EN_ESPERA_ASESOR')
-       AND last_interaction_at < now() - interval '30 minutes'`, [companyId],
+       AND GREATEST(last_interaction_at, COALESCE(last_seen_at, last_interaction_at)) < now() - interval '5 minutes'`, [companyId],
   );
   const values: unknown[] = [companyId, admin.role === 'advisor' ? admin.advisor_id : null];
   let where = `s.company_id = $1 AND ($2::uuid IS NULL OR EXISTS (

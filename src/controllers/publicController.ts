@@ -11,7 +11,7 @@ import { eligibleRecipients } from '../services/assignment';
 import { answerChat } from '../services/chat';
 import { createHandoff } from '../services/handoff';
 import { parseUserAgent, visitorHash } from '../utils/userAgent';
-import { dataRequestState, finishBotTurn, publicConversation, saveVisitorName, startUserTurn } from '../services/liveChat';
+import { dataRequestState, finishBotTurn, publicConversation, saveVisitorName, touchConversation, startUserTurn } from '../services/liveChat';
 
 /** Veces que el bot pide datos de identificación antes de pasar el caso a un asesor. */
 const MAX_DATA_REQUESTS = 3;
@@ -112,6 +112,17 @@ export function publicController(deps: AppDeps) {
           : 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: turn.conversation.status } });
         return;
       }
+      // Pidió un asesor sin haber dado sus datos: se le piden primero (nombre, documento y cartera) y luego pasa a la cola.
+      if (turn.needsData) {
+        const parts = turn.needsData.missing.map((f) => f === 'name' ? 'tu nombre' : f === 'document' ? 'tu número de documento'
+          : `la cartera o área de tu consulta (${turn.needsData!.portfolios.join(', ')})`);
+        const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts.at(-1)}` : parts[0];
+        const prompt = `¡Claro! Te comunico con un asesor. Para que pueda ayudarte desde el primer mensaje, escríbeme por favor ${list}.`;
+        const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, prompt, false, { kind: 'data_request', field: 'handoff' });
+        if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
+        res.json({ type: 'answer', message: prompt, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } });
+        return;
+      }
       // Si el bot había pedido el nombre, la respuesta del visitante es el nombre.
       const requests = await dataRequestState(deps.db, company.id, turn.conversation.id);
       if (!turn.conversation.visitor_name && requests.last === 'name') {
@@ -145,6 +156,13 @@ export function publicController(deps: AppDeps) {
       res.json(saved.conversation.status === 'BOT_ACTIVO'
         ? { ...reply, message: text, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
         : { type: 'live', message: saved.message?.content ?? 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
+    },
+
+    async ping(req: Request, res: Response) {
+      const { company, session } = req.pub!;
+      const r = await touchConversation(deps.db, company.id, session!.id);
+      if (r.reopened && r.status) deps.live.publish(company.id, 'chat_status', { status: r.status });
+      res.json({ ok: true, status: r.status });
     },
 
     async conversation(req: Request, res: Response) {
