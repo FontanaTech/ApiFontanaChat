@@ -4,7 +4,7 @@ import type { AppDeps } from '../app-types';
 import { assignRecipient, type Recipient } from '../services/assignment';
 import { buildWaTextUrl } from '../services/handoff';
 import {
-  actorAdvisor, auditChat, getConversationForAdmin, listConversations, lockConversation, ownerOrManager,
+  actorAdvisor, advisorCanAccess, auditChat, getConversationForAdmin, listConversations, lockConversation, ownerOrManager,
 } from '../services/liveChat';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import * as v from '../validation/schemas';
@@ -138,7 +138,8 @@ export function liveChatController(deps: AppDeps) {
       const body = parse(v.changeChatPortfolioBody, req.body);
       const result = await deps.db.tx(async (q) => {
         const before = await lockConversation(q, cid(req), chatId(req));
-        ownerOrManager(req.admin!, before);
+        // Sin asesor asignado cualquiera con acceso puede indicar la cartera; con asesor, solo él o un administrador.
+        if (before.status === 'TOMADO_POR_ASESOR') ownerOrManager(req.admin!, before);
         const portfolio = (await q.query<any>('SELECT id, name FROM portfolios WHERE id = $1 AND company_id = $2 AND active', [body.portfolioId, cid(req)])).rows[0];
         if (!portfolio) throw notFound('Cartera no encontrada');
         let keepAdvisor = true;
@@ -220,7 +221,10 @@ export function liveChatController(deps: AppDeps) {
       const body = parse(v.whatsappChatBody, req.body);
       const result = await deps.db.tx(async (q) => {
         const before = await lockConversation(q, cid(req), chatId(req));
-        ownerOrManager(req.admin!, before);
+        // Un chat sin tomar puede remitirse a WhatsApp directamente; si ya lo tiene un asesor, solo él o un administrador.
+        if (before.status === 'TOMADO_POR_ASESOR') ownerOrManager(req.admin!, before);
+        else if (!(await advisorCanAccess(q, req.admin!, cid(req), before.portfolio_id))) throw forbidden('No tienes acceso a esta cartera');
+        if (['CERRADO', 'REMITIDO_WHATSAPP'].includes(before.status)) throw conflict('La conversación ya finalizó');
         if (!before.portfolio_id) throw badRequest('Selecciona una cartera antes de remitir a WhatsApp');
         let recipient: Recipient | null;
         if (body.advisorId) {

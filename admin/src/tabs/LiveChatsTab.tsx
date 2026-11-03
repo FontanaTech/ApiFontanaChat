@@ -43,6 +43,12 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
   const current = detail.data?.conversation;
   const allowed = (advisors.data?.items ?? []).filter((a) => !current?.portfolio_id || a.portfolio_ids.includes(current.portfolio_id));
   const run = (path: string, body: unknown = {}) => action.run(() => api('POST', `/companies/${companyId}/chat-sessions/${selected}${path}`, body));
+  const needsAdvisorPick = admin.role !== 'advisor' && !admin.advisor_id;
+  const remitWhatsapp = () => {
+    if (customWa && !waText.trim()) { alert('Escribe el mensaje personalizado o desactívalo en «Más opciones».'); return; }
+    void run('/whatsapp', customWa ? { message: waText.trim() } : {});
+    setCustomWa(false); setWaText('');
+  };
   const send = async () => { if (draft.trim() && await run('/messages', { message: draft })) setDraft(''); };
   return <>
     <div className="live-chat-heading">
@@ -91,10 +97,6 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
         {current && <>
           <header className="conversation-header">
             <div><h3>{current.visitor_name || `Sesión ${current.id.slice(0, 8)}`}</h3><p className="muted">{current.document ? `Documento ${current.document} · ` : ''}{current.portfolio_name || 'Sin cartera'} · {LABELS[current.status]}</p></div>
-            {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <div className="inline compact">
-              {admin.role !== 'advisor' && <select aria-label="Asesor que tomará el chat" value={takeAdvisor} onChange={(e) => setTakeAdvisor(e.target.value)}><option value="">Seleccionar asesor</option>{allowed.filter((a) => a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>}
-              <button className="primary" disabled={!admin.advisor_id && !takeAdvisor} onClick={() => run('/take', takeAdvisor ? { advisorId: takeAdvisor } : {})}>Tomar control</button>
-            </div>}
           </header>
           <div className="messages" aria-live="polite">
             {detail.data?.messages.map((message) => <article key={message.id} className={`message ${message.sender_type.toLowerCase()}`}>
@@ -107,28 +109,47 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
             <textarea aria-label="Respuesta" rows={3} maxLength={4000} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} placeholder="Escribe una respuesta…" />
             <button className="primary" disabled={!draft.trim()} onClick={send}>Enviar</button>
           </div>}
-          <div className="chat-actions">
-            <select aria-label="Seleccionar cartera" value={portfolio || current.portfolio_id || ''} onChange={(e) => setPortfolio(e.target.value)}>
-              <option value="">Seleccionar cartera</option>{portfolios.data?.items.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <button disabled={!portfolio || portfolio === current.portfolio_id} onClick={() => action.run(() => api('PATCH', `/companies/${companyId}/chat-sessions/${selected}/portfolio`, { portfolioId: portfolio }))}>Cambiar cartera</button>
-            {current.status === 'TOMADO_POR_ASESOR' && <>
-              <button onClick={() => run('/release', { destination: 'bot' })}>Devolver al bot</button>
-              <button onClick={() => run('/release', { destination: 'queue' })}>Liberar a cola</button>
-              <select aria-label="Transferir a" value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
-                <option value="">Transferir a…</option>{allowed.filter((a) => a.id !== current.current_advisor_id && a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-              <button disabled={!transferTo} onClick={() => run('/transfer', { advisorId: transferTo })}>Transferir</button>
-              <label title="Por defecto se envía un mensaje de bienvenida con el contexto del chat"><input type="checkbox" checked={customWa} onChange={(e) => setCustomWa(e.target.checked)} />Mensaje personalizado</label>
-              {customWa && <input aria-label="Mensaje de WhatsApp" maxLength={500} placeholder="Mensaje que verá el cliente en WhatsApp" value={waText} onChange={(e) => setWaText(e.target.value)} />}
-              <button disabled={customWa && !waText.trim()} onClick={() => { void run('/whatsapp', customWa ? { message: waText.trim() } : {}); setCustomWa(false); setWaText(''); }}>Remitir a WhatsApp</button>
-            </>}
-            {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
-            {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <button className="danger" onClick={() => {
+          {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <div className="chat-actions">
+            {!current.portfolio_id
+              ? <label className="step">1. Indica la cartera
+                <select aria-label="Seleccionar cartera" value="" onChange={(e) => { if (e.target.value) void action.run(() => api('PATCH', `/companies/${companyId}/chat-sessions/${selected}/portfolio`, { portfolioId: e.target.value })); }}>
+                  <option value="">Seleccionar cartera</option>{portfolios.data?.items.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+              : <>
+                {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <>
+                  {needsAdvisorPick && <select aria-label="Asesor que tomará el chat" value={takeAdvisor} onChange={(e) => setTakeAdvisor(e.target.value)}><option value="">Seleccionar asesor</option>{allowed.filter((a) => a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>}
+                  <button className="primary" disabled={needsAdvisorPick && !takeAdvisor} onClick={() => run('/take', takeAdvisor ? { advisorId: takeAdvisor } : {})}>Tomar control</button>
+                  <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>
+                </>}
+                {current.status === 'TOMADO_POR_ASESOR' && <>
+                  <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>
+                  <button onClick={() => run('/release', { destination: 'bot' })}>Devolver al bot</button>
+                </>}
+                {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
+              </>}
+            <button className="danger" onClick={() => {
               const reason = window.prompt('Motivo: resuelto, remitido, abandono, informacion_entregada u otro', 'resuelto');
               if (reason && ['resuelto', 'remitido', 'abandono', 'informacion_entregada', 'otro'].includes(reason)) void run('/close', { reason });
-            }}>Cerrar</button>}
-          </div>
+            }}>Cerrar</button>
+            {current.portfolio_id && <details className="more-actions"><summary>Más opciones</summary>
+              <div className="chat-actions">
+                <select aria-label="Cambiar cartera" value={portfolio || current.portfolio_id || ''} onChange={(e) => setPortfolio(e.target.value)}>
+                  {portfolios.data?.items.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <button disabled={!portfolio || portfolio === current.portfolio_id} onClick={() => action.run(() => api('PATCH', `/companies/${companyId}/chat-sessions/${selected}/portfolio`, { portfolioId: portfolio }))}>Cambiar cartera</button>
+                {current.status === 'TOMADO_POR_ASESOR' && <>
+                  <button onClick={() => run('/release', { destination: 'queue' })}>Liberar a cola</button>
+                  <select aria-label="Transferir a otro asesor" value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
+                    <option value="">Transferir a otro asesor…</option>{allowed.filter((a) => a.id !== current.current_advisor_id && a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  <button disabled={!transferTo} onClick={() => run('/transfer', { advisorId: transferTo })}>Transferir</button>
+                </>}
+                <label title="Por defecto se envía un mensaje de bienvenida con el contexto del chat"><input type="checkbox" checked={customWa} onChange={(e) => setCustomWa(e.target.checked)} />Mensaje de WhatsApp personalizado</label>
+                {customWa && <input aria-label="Mensaje de WhatsApp" maxLength={500} placeholder="Mensaje que verá el cliente en WhatsApp" value={waText} onChange={(e) => setWaText(e.target.value)} />}
+              </div>
+            </details>}
+          </div>}
         </>}
       </section>
     </div>

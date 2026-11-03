@@ -197,3 +197,8 @@ button.conversation.active { box-shadow: inset 3px 0 var(--primary); }
   .conversation-list { max-height: 320px; border-right: 0; border-bottom: 1px solid var(--line); }
   .conversation-panel { min-height: 580px; }
 }
+
+.chat-actions .step { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.chat-actions .more-actions { flex-basis: 100%; }
+.chat-actions .more-actions summary { cursor: pointer; color: var(--muted, #6b6b6b); font-size: 0.85rem; }
+.chat-actions .more-actions .chat-actions { padding: 8px 0 0; border-top: 0; }
