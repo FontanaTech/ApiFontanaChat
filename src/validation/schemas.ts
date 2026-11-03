@@ -163,7 +163,7 @@ export const changeChatPortfolioBody = z.object({ portfolioId: uuid }).strict();
 export const releaseChatBody = z.object({ destination: z.enum(['bot', 'queue']) }).strict();
 export const transferChatBody = z.object({ advisorId: uuid }).strict();
 export const closeChatBody = z.object({ reason: z.enum(['resuelto', 'remitido', 'abandono', 'informacion_entregada', 'otro']), summary: z.string().trim().max(1000).optional() }).strict();
-export const whatsappChatBody = z.object({ advisorId: uuid.optional(), summary: z.string().trim().max(500).optional() }).strict();
+export const whatsappChatBody = z.object({ advisorId: uuid.optional(), summary: z.string().trim().max(500).optional(), message: z.string().trim().min(1).max(500).optional() }).strict();
 export const advisorStatusBody = z.object({ status: z.enum(['available', 'busy', 'offline']) }).strict();
 
 export const contentSchema = z.object({

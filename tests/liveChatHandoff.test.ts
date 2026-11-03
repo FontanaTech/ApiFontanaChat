@@ -90,10 +90,14 @@ describe('toma de control del chatbot', () => {
     const general = portfolios.body.items.find((x: any) => x.key === 'general');
     const changed = await manager.patch(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/portfolio`, { portfolioId: general.id });
     expect(changed.status).toBe(200);
-    const routed = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/whatsapp`, { summary: 'Consulta de prueba' });
+    const routed = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/whatsapp`, {});
     expect(routed.status).toBe(200);
     expect(routed.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
     expect(routed.body.conversation.status).toBe('REMITIDO_WHATSAPP');
+    const text = decodeURIComponent(routed.body.waUrl);
+    expect(text).toContain('Vengo del chat de la página');
+    expect(text).toContain('documento 10000001');
+    expect(text).not.toMatch(/nota|resumen/i);
     const snapshot = await visitor.get('/conversation');
     expect(snapshot.body.messages.at(-1).metadata.waUrl).toBe(routed.body.waUrl);
   });

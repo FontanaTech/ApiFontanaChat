@@ -17,6 +17,8 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
   const [portfolio, setPortfolio] = useState('');
   const [transferTo, setTransferTo] = useState('');
   const [draft, setDraft] = useState('');
+  const [customWa, setCustomWa] = useState(false);
+  const [waText, setWaText] = useState('');
   const setFilter = (key: keyof typeof filters, value: string | boolean) => setFilters((previous) => ({ ...previous, [key]: value }));
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -117,7 +119,9 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
                 <option value="">Transferir a…</option>{allowed.filter((a) => a.id !== current.current_advisor_id && a.status !== 'offline').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
               <button disabled={!transferTo} onClick={() => run('/transfer', { advisorId: transferTo })}>Transferir</button>
-              <button onClick={() => { const summary = window.prompt('Resumen para WhatsApp', current.subject || ''); if (summary !== null) void run('/whatsapp', { summary }); }}>Remitir a WhatsApp</button>
+              <label title="Por defecto se envía un mensaje de bienvenida con el contexto del chat"><input type="checkbox" checked={customWa} onChange={(e) => setCustomWa(e.target.checked)} />Mensaje personalizado</label>
+              {customWa && <input aria-label="Mensaje de WhatsApp" maxLength={500} placeholder="Mensaje que verá el cliente en WhatsApp" value={waText} onChange={(e) => setWaText(e.target.value)} />}
+              <button disabled={customWa && !waText.trim()} onClick={() => { void run('/whatsapp', customWa ? { message: waText.trim() } : {}); setCustomWa(false); setWaText(''); }}>Remitir a WhatsApp</button>
             </>}
             {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
             {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <button className="danger" onClick={() => {

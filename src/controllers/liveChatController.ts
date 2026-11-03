@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { AppDeps } from '../app-types';
 import { assignRecipient, type Recipient } from '../services/assignment';
-import { buildWaUrl } from '../services/handoff';
+import { buildWaTextUrl } from '../services/handoff';
 import {
   actorAdvisor, auditChat, getConversationForAdmin, listConversations, lockConversation, ownerOrManager,
 } from '../services/liveChat';
@@ -243,8 +243,10 @@ export function liveChatController(deps: AppDeps) {
         const portfolio = (await q.query<{ name: string }>('SELECT name FROM portfolios WHERE id = $1 AND company_id = $2', [before.portfolio_id, cid(req)])).rows[0];
         const company = (await q.query<{ name: string }>('SELECT name FROM companies WHERE id = $1', [cid(req)])).rows[0];
         const summary = body.summary || before.summary || before.subject;
-        const reason = [before.document ? `Documento: ${before.document}` : '', `Cartera: ${portfolio?.name ?? ''}`, summary].filter(Boolean).join(' · ');
-        const waUrl = buildWaUrl(recipient.number, company.name, before.visitor_name ?? before.id.slice(0, 8), reason, before.id);
+        // Por defecto: bienvenida con el contexto de la conversación. Solo si el asesor activa el mensaje personalizado, se usa su texto.
+        const context = [before.document ? `documento ${before.document}` : '', portfolio?.name ? `cartera ${portfolio.name}` : ''].filter(Boolean).join(', ');
+        const welcome = `Hola ${company.name}, soy ${before.visitor_name ?? 'un visitante de la página'}. Vengo del chat de la página${context ? ` (${context})` : ''}${before.subject ? ` y quiero continuar mi consulta sobre: ${before.subject}` : ' y quiero continuar mi atención por aquí'}.`;
+        const waUrl = buildWaTextUrl(recipient.number, `${body.message ?? welcome} (Ref. ${before.id})`);
         const conversation = (await q.query<any>(
           `UPDATE chat_sessions SET status = 'REMITIDO_WHATSAPP', summary = $3, closed_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
           [before.id, cid(req), summary],

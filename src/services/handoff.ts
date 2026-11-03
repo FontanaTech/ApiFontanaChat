@@ -28,6 +28,11 @@ export function buildWaUrl(number: string, companyName: string, name: string, re
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 
+/** Enlace con el texto ya armado (bienvenida con contexto o mensaje personalizado del asesor). */
+export function buildWaTextUrl(number: string, text: string): string {
+  return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
+}
+
 export interface HandoffResult {
   handoff: Handoff;
   replayed: boolean;
