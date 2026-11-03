@@ -173,3 +173,41 @@ describe('seed:aagora', () => {
     await db.close();
   });
 });
+
+describe('captura de datos del visitante', async () => {
+  const { explicitName, extractDocument, matchPortfolio, extractVisitorData, onlyData } = await import('../src/services/visitorData');
+  const { classify } = await import('../src/services/intents');
+  const wallets = [{ key: 'pruebas', name: 'Cartera de pruebas' }, { key: 'general', name: 'General' }];
+  it('nombre explícito dentro de una frase', () => {
+    expect(explicitName('te estoy diciendo que mi nombre es Juan ESTEBAN')).toBe('Juan Esteban');
+    expect(explicitName('Hola, me llamo Ana María y necesito ayuda')).toBe('Ana María');
+    expect(explicitName('soy cliente de ustedes')).toBeNull();
+    expect(explicitName('soy de Bogotá')).toBeNull();
+  });
+  it('documento con o sin separadores', () => {
+    expect(extractDocument('mi cc es 1.021.803.088')).toBe('1021803088');
+    expect(extractDocument('sin numeros')).toBeUndefined();
+  });
+  it('cartera tolera singular/plural y relleno', () => {
+    expect(matchPortfolio('MI CARTERA ES CARTERA DE PRUEBA', wallets)?.key).toBe('pruebas');
+    expect(matchPortfolio('general', wallets)?.key).toBe('general');
+    expect(matchPortfolio('quiero información', wallets)).toBeUndefined();
+  });
+  it('distingue un mensaje que solo trae datos de una pregunta', () => {
+    expect(onlyData(extractVisitorData('1021803088 NUMERO DE DOCUMENTO Y MI CARTERA ES CARTERA DE PRUEBA', wallets, false))).toBe(true);
+    expect(onlyData(extractVisitorData('mi cédula es 1021803088, ¿cuánto debo de mi crédito hipotecario?', wallets, false))).toBe(false);
+  });
+  it('una sola regla de intención con prioridad fija', () => {
+    expect(classify('eres una persona?')).toBe('identity');
+    expect(classify('quiero hablar con un asesor')).toBe('human');
+    expect(classify('mi cédula es 123456')).toBe('other');
+    expect(classify('necesito un acuerdo de pago')).toBe('sensitive');
+    // Preguntar POR un servicio no es un asunto personal; hablar de su propio caso sí.
+    expect(classify('¿qué es la asesoría legal?')).toBe('other');
+    expect(classify('¿tienen abogados?')).toBe('other');
+    expect(classify('necesito un abogado')).toBe('sensitive');
+    expect(classify('tengo una deuda con Flamingo')).toBe('sensitive');
+    expect(classify('necesito ayuda')).toBe('help');
+    expect(classify('👍')).toBe('thanks');
+  });
+});

@@ -4,6 +4,8 @@ import type { PublicSession } from '../models/public';
 import type { Db, Queryable } from '../db';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { normalize } from '../utils/text';
+import { classify } from './intents';
+import { extractVisitorData, type DataField, type Extracted } from './visitorData';
 
 export type ChatStatus = 'BOT_ACTIVO' | 'EN_ESPERA_ASESOR' | 'TOMADO_POR_ASESOR' | 'REMITIDO_WHATSAPP' | 'CERRADO' | 'ABANDONADO';
 export type SenderType = 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM';
@@ -24,46 +26,70 @@ export interface ChatMessage {
 const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS NOT NULL AND current_advisor_id IS NULL THEN 'EN_ESPERA_ASESOR' ELSE 'BOT_ACTIVO' END,
   last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`;
 
-/** Veces que se piden nombre, documento y cartera a quien solicita un asesor antes de pasarlo igual a la cola. */
+/** Palabras de "quiero hablar con un asesor": sin ellas se ve si el mensaje traía además un tema. */
+const HUMAN_FILLER = /\b(quiero|quisiera|necesito|deseo|me gustaria|puedo|podria|por favor|favor|hablar|comunicarme|comunicar|con|un|una|el|la|al|asesor|asesora|asesores|agente|operador|operadora|persona|humano|real|alguien|que|me|llamen|llame|contacten|contacte|atencion|humana|ahora|ya|urgente|porfa)\b/g;
+
+/**
+ * Veces que se piden los datos que faltan a quien va a pasar con un asesor: si el visitante deja de darlos tras
+ * MAX_HANDOFF_DATA_REQUESTS pedidos sin avance, pasa igual a la cola y el asesor los pedirá. Mientras siga entregando
+ * datos se le pide lo que falte, hasta MAX_HANDOFF_DATA_REQUESTS_HARD pedidos en total.
+ */
 export const MAX_HANDOFF_DATA_REQUESTS = 2;
+export const MAX_HANDOFF_DATA_REQUESTS_HARD = 4;
 
-/** Veces que el bot ya pidió los datos para pasar con un asesor en esta conversación. */
-export async function handoffAsked(q: Queryable, companyId: string, conversationId: string): Promise<number> {
-  return (await q.query<{ n: number }>(
-    `SELECT count(*)::int AS n FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'field' = 'handoff'`,
-    [companyId, conversationId])).rows[0].n;
-}
+export type { DataField };
 
-/** Datos que aún faltan para pasar la conversación a un asesor (nombre, documento y, si la empresa las usa, cartera). */
-export async function handoffGaps(q: Queryable, companyId: string, conv: Pick<LiveChatSession, 'id' | 'visitor_name' | 'document' | 'portfolio_id'>, asked?: number) {
-  const portfolios = (await q.query<{ name: string }>('SELECT name FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [companyId])).rows.map((p) => p.name);
-  const missing: Array<'name' | 'document' | 'portfolio'> = [];
+/**
+ * Datos que aún faltan para pasar la conversación a un asesor: nombre, documento y la cartera, esta última solo si la
+ * empresa tiene más de una activa (con una sola no hay nada que elegir: se asigna sola al pasar a la cola).
+ */
+export function missingData(conv: Pick<LiveChatSession, 'visitor_name' | 'document' | 'portfolio_id'>, choosePortfolio: boolean): DataField[] {
+  const missing: DataField[] = [];
   if (!conv.visitor_name) missing.push('name');
   if (!conv.document) missing.push('document');
-  if (!conv.portfolio_id && portfolios.length > 0) missing.push('portfolio');
-  return { missing, portfolios, asked: asked ?? await handoffAsked(q, companyId, conv.id) };
+  if (!conv.portfolio_id && choosePortfolio) missing.push('portfolio');
+  return missing;
 }
 
-/** Texto amable que pide los datos que faltan antes de pasar con un asesor. */
-export function handoffDataPrompt(missing: Array<'name' | 'document' | 'portfolio'>, portfolios: string[], lead: string): string {
-  const parts = missing.map((f) => f === 'name' ? 'tu nombre' : f === 'document' ? 'tu número de documento' : `la cartera o área de tu consulta (${portfolios.join(', ')})`);
-  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}` : parts[0];
-  return `${lead} escríbeme por favor ${list}.`;
+/** "tu nombre, tu número de documento y la cartera de tu consulta (A, B)". */
+export function dataList(missing: DataField[], portfolios: string[]): string {
+  const parts = missing.map((f) => f === 'name' ? 'tu nombre' : f === 'document' ? 'tu número de documento' : `la cartera de tu consulta (${portfolios.join(', ')})`);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}` : parts[0] ?? '';
 }
 
-/** Extrae el nombre de una respuesta como "Juan Pérez 1002003 Flamingo" quitando documento y cartera. */
-export function nameFromReply(message: string, terms: string[] = []): string | null {
-  // Una pregunta o una solicitud no es un nombre.
-  if (/[?¿]/.test(message) || /^\s*(que|qué|quien|quién|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quiero|necesito|puedo|tienen|hola|buenas|gracias)\b/i.test(message)) return null;
-  let t = message.replace(/\d+/g, ' ');
-  for (const term of terms) if (term) t = t.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
-  t = t.replace(/\b(me llamo|mi nombre es|mi nombre|soy|nombre|documento|cedula|cédula|cc|cartera|area|área)\b/gi, ' ').replace(/[,.;:-]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (t.length < 2 || t.length > 60 || t.split(' ').length > 5 || HUMAN_RE.test(normalize(t))) return null;
-  return t.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+/** Lo que el bot ya hizo en esta conversación, leído de los metadatos de sus mensajes. */
+export interface BotState {
+  /** Último mensaje del bot: tipo y dato pedido ('handoff' = pidió los datos para pasar con un asesor). */
+  lastKind: string | null;
+  lastField: string | null;
+  /** Veces que pidió los datos para pasar con un asesor desde la última vez que el visitante canceló. */
+  handoffAsks: number;
+  /** De esos pedidos, cuántos van desde la última vez que el visitante entregó algún dato (sin avance). */
+  stalledAsks: number;
+  /** Ya preguntó el nombre por iniciativa propia (solo se hace una vez). */
+  nameAsked: boolean;
 }
 
-// "Eres una persona?" o "persona natural" no son una solicitud de asesor; "hablar con una persona" sí.
-const HUMAN_RE = /\b(asesor|asesora|agente|representante|hablar con (alguien|una persona|un humano)|(atencion|atención) humana|persona real|quiero (una |un )?(persona|humano))\b/i;
+export async function botState(q: Queryable, companyId: string, conversationId: string): Promise<BotState> {
+  const rows = (await q.query<{ kind: string | null; field: string | null; progress: string | null }>(
+    `SELECT metadata->>'kind' AS kind, metadata->>'field' AS field, metadata->>'progress' AS progress FROM chat_messages
+     WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' ORDER BY created_at, id`, [companyId, conversationId])).rows;
+  let handoffAsks = 0;
+  let stalledAsks = 0;
+  for (const r of rows) {
+    if (r.kind === 'handoff_cancel') { handoffAsks = 0; stalledAsks = 0; }
+    else if (r.kind === 'data_request' && r.field === 'handoff') {
+      handoffAsks++;
+      // Un pedido hecho justo después de recibir un dato reinicia la cuenta: el visitante está colaborando.
+      stalledAsks = r.progress === 'true' ? 1 : stalledAsks + 1;
+    }
+  }
+  const last = rows.at(-1);
+  return {
+    lastKind: last?.kind ?? null, lastField: last?.field ?? null, handoffAsks, stalledAsks,
+    nameAsked: rows.some((r) => r.kind === 'data_request' && r.field === 'name'),
+  };
+}
 
 async function portfolioId(q: Queryable, companyId: string, key?: string): Promise<string | null> {
   if (!key) return null;
@@ -91,77 +117,94 @@ export async function ensureConversation(
   )).rows[0];
 }
 
-export type DataField = 'name' | 'document' | 'portfolio';
-export interface NeedsData { missing: DataField[]; portfolios: string[]; continuing: boolean }
+export interface UserTurn {
+  conversation: LiveChatSession;
+  message: ChatMessage;
+  created: boolean;
+  /** El bot puede responder (activo o en espera de asesor); con un asesor al mando queda en silencio. */
+  botMayReply: boolean;
+  /** Dato que pidió el bot en su último mensaje ('name' | 'document' | 'portfolio' | 'handoff'). */
+  lastBotField: string | null;
+  /** Datos capturados en ESTE mensaje (ya guardados en la conversación). */
+  captured: DataField[];
+  extracted: Extracted;
+}
 
+/**
+ * Paso 1 de cada turno: guarda el mensaje del visitante y los datos que trae (nombre, documento, cartera).
+ * No decide respuestas ni escalamientos: eso lo hace liveBot.ts con el resultado.
+ */
 export async function startUserTurn(
   db: Db, company: Company, publicSession: PublicSession, message: string,
   profile: { portfolioKey?: string; document?: string; name?: string; subject?: string } = {},
-): Promise<{ conversation: LiveChatSession; message: ChatMessage; botMayReply: boolean; escalated: boolean; created: boolean; needsData: NeedsData | null; lastBotField: string | null }> {
+): Promise<UserTurn> {
   return db.tx(async (q) => {
     const existed = await q.query('SELECT 1 FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [company.id, publicSession.id]);
-    const inferred = { ...profile };
-    const portfolios = (await q.query<{ key: string; name: string; aliases: string[] }>('SELECT key, name, aliases FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id])).rows;
-    if (!inferred.document) inferred.document = message.match(/\b\d{5,15}\b/)?.[0];
-    if (!inferred.portfolioKey) {
-      const text = normalize(message);
-      inferred.portfolioKey = portfolios.find((p) => [p.key, p.name, ...(p.aliases ?? [])].some((term) => text.includes(normalize(term))))?.key;
-    }
-    if (!inferred.subject && !/^\s*(hola|buenas|buenos dias)\b/i.test(normalize(message))) inferred.subject = message.slice(0, 300);
-    const initial = await ensureConversation(q, company.id, publicSession.id, inferred);
-    let locked = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [initial.id, company.id])).rows[0];
+    const portfolios = (await q.query<{ id: string; key: string; name: string; aliases: string[] }>(
+      'SELECT id, key, name, aliases FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id])).rows;
+    const initial = await ensureConversation(q, company.id, publicSession.id, profile);
+    let current = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [initial.id, company.id])).rows[0];
     // El visitante volvió tras ser marcado como ausente: la conversación se reabre donde estaba.
-    if (locked.status === 'ABANDONADO') locked = (await q.query<LiveChatSession>(REOPEN_SQL, [locked.id, company.id])).rows[0];
-    if (locked.status === 'CERRADO' || locked.status === 'REMITIDO_WHATSAPP') throw conflict('La conversación ya finalizó');
-    let current = locked;
-    let escalate = false;
-    let needsData: NeedsData | null = null;
-    let lastBotField: string | null = null;
-    if (locked.status === 'BOT_ACTIVO') {
-      // Si el bot ya pidió los datos para pasar con un asesor, esta respuesta los completa.
-      const lastBot = (await q.query<{ field: string | null }>(
-        `SELECT metadata->>'field' AS field FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT'
-         ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, locked.id])).rows[0];
-      lastBotField = lastBot?.field ?? null;
-      const awaiting = lastBotField === 'handoff';
-      const asked = await handoffAsked(q, company.id, locked.id);
-      const isQuestion = /\?|^\s*(que|qué|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quien|quién)\b/i.test(message) || message.trim().split(/\s+/).length > 7;
-      if (asked > 0 && !current.visitor_name && !isQuestion) {
-        const name = nameFromReply(message, portfolios.flatMap((p) => [p.key, p.name, ...(p.aliases ?? [])]));
-        if (name) current = (await q.query<LiveChatSession>('UPDATE chat_sessions SET visitor_name = $3, updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *', [locked.id, company.id, name])).rows[0];
-      }
-      const explicit = HUMAN_RE.test(message);
-      if (explicit || asked > 0) {
-        const gaps = await handoffGaps(q, company.id, current, asked);
-        if (gaps.missing.length === 0 || asked >= MAX_HANDOFF_DATA_REQUESTS) escalate = true;
-        else if (explicit || (awaiting && !isQuestion)) needsData = { missing: gaps.missing, portfolios: gaps.portfolios, continuing: awaiting };
-        // Si hizo otra pregunta mientras faltan datos, el bot la responde y se los vuelve a pedir después.
-      }
-    }
-    const nextStatus = escalate ? 'EN_ESPERA_ASESOR' : locked.status;
+    if (current.status === 'ABANDONADO') current = (await q.query<LiveChatSession>(REOPEN_SQL, [current.id, company.id])).rows[0];
+    if (current.status === 'CERRADO' || current.status === 'REMITIDO_WHATSAPP') throw conflict('La conversación ya finalizó');
+
+    const lastBot = (await q.query<{ kind: string | null; field: string | null }>(
+      `SELECT metadata->>'kind' AS kind, metadata->>'field' AS field FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT'
+       ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, current.id])).rows[0];
+    const lastBotField = lastBot?.field ?? null;
+
+    // Captura: el documento y la cartera se reconocen en cualquier mensaje; un nombre suelto solo si el bot lo pidió
+    // (o si, tras ofrecerle un asesor, responde con sus datos: "Pedro Gómez 30000003").
+    const askedName = current.visitor_name ? false
+      : lastBotField === 'name' || lastBotField === 'handoff' ? true : lastBot?.kind === 'offer' ? 'weak' as const : false;
+    const x = extractVisitorData(message, portfolios, askedName);
+    const answering = (f: DataField) => lastBotField === f || lastBotField === 'handoff';
+    const captured: DataField[] = [];
+    let name = current.visitor_name;
+    if (x.name && (!name || (x.nameExplicit && normalize(x.name) !== normalize(name)))) { name = x.name; captured.push('name'); }
+    let document = current.document;
+    if (x.document && x.document !== document && (!document || answering('document'))) { document = x.document; captured.push('document'); }
+    let portfolio = current.portfolio_id;
+    const found = x.portfolioKey ? portfolios.find((p) => p.key === x.portfolioKey) : undefined;
+    if (found && found.id !== portfolio && (!portfolio || answering('portfolio'))) { portfolio = found.id; captured.push('portfolio'); }
+    // El tema de la consulta (lo que verán el asesor y el WhatsApp) es el primer mensaje con contenido real, no un dato.
+    const intent = classify(message);
+    // "Quiero hablar con un asesor" no es un tema; "quiero hablar con un asesor sobre mi deuda" sí.
+    const topic = intent === 'human' ? x.rest.replace(HUMAN_FILLER, ' ') : x.rest;
+    const subject = !current.subject && topic.split(' ').filter((w) => w.length >= 3).length >= 2 && !['greeting', 'identity', 'thanks', 'help'].includes(intent)
+      ? message.slice(0, 300) : current.subject;
+
     const conversation = (await q.query<LiveChatSession>(
-      `UPDATE chat_sessions SET status = $3, waiting_since = CASE WHEN $3 = 'EN_ESPERA_ASESOR' THEN COALESCE(waiting_since, now()) ELSE waiting_since END,
+      `UPDATE chat_sessions SET visitor_name = $3, document = $4, portfolio_id = $5, subject = $6,
          last_interaction_at = now(), last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
-      [locked.id, company.id, nextStatus],
+      [current.id, company.id, name, document, portfolio, subject],
     )).rows[0];
     const saved = (await q.query<ChatMessage>(
       `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content) VALUES ($1,$2,'USER',$3) RETURNING *`,
-      [company.id, locked.id, message],
+      [company.id, current.id, message],
     )).rows[0];
-    return { conversation, message: saved, botMayReply: !escalate && (nextStatus === 'BOT_ACTIVO' || nextStatus === 'EN_ESPERA_ASESOR'), escalated: escalate, created: existed.rows.length === 0, needsData, lastBotField };
+    return {
+      conversation, message: saved, created: existed.rows.length === 0, lastBotField, captured, extracted: x,
+      botMayReply: conversation.status === 'BOT_ACTIVO' || conversation.status === 'EN_ESPERA_ASESOR',
+    };
   });
 }
 
-export async function finishBotTurn(db: Db, companyId: string, conversationId: string, content: string, escalate = false, metadata: Record<string, unknown> = {}) {
+export async function finishBotTurn(
+  db: Db, companyId: string, conversationId: string, content: string, escalate = false, metadata: Record<string, unknown> = {},
+  opts: { assignPortfolioId?: string | null } = {},
+) {
   return db.tx(async (q) => {
     const current = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [conversationId, companyId])).rows[0];
     if (!current) throw notFound('Conversación no encontrada');
     // El bot responde mientras está activo o mientras el visitante espera a un asesor; al tomar el control se pausa.
     if (current.status !== 'BOT_ACTIVO' && current.status !== 'EN_ESPERA_ASESOR') return { conversation: current, message: null as ChatMessage | null };
     if (escalate && current.status === 'BOT_ACTIVO') {
+      // Con una sola cartera activa no hay nada que preguntar: la conversación llega al panel ya con su cartera.
       const conversation = (await q.query<LiveChatSession>(
-        `UPDATE chat_sessions SET status = 'EN_ESPERA_ASESOR', waiting_since = now(), last_interaction_at = now(), updated_at = now()
-         WHERE id = $1 AND company_id = $2 RETURNING *`, [conversationId, companyId],
+        `UPDATE chat_sessions SET status = 'EN_ESPERA_ASESOR', waiting_since = now(), portfolio_id = COALESCE(portfolio_id, $3::uuid),
+           last_interaction_at = now(), updated_at = now()
+         WHERE id = $1 AND company_id = $2 RETURNING *`, [conversationId, companyId, opts.assignPortfolioId ?? null],
       )).rows[0];
       const system = (await q.query<ChatMessage>(
         `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content)
@@ -179,22 +222,12 @@ export async function finishBotTurn(db: Db, companyId: string, conversationId: s
   });
 }
 
-/** Solicitudes de datos que el bot ya hizo en esta conversación (para no insistir sin fin) y la última pedida. */
-export async function dataRequestState(q: Queryable, companyId: string, conversationId: string): Promise<{ asked: number; last: string | null }> {
-  const r = await q.query<{ field: string | null }>(
-    `SELECT metadata->>'field' AS field FROM chat_messages
-     WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'kind' = 'data_request'
-     ORDER BY created_at DESC, id DESC`, [companyId, conversationId],
-  );
-  return { asked: r.rows.length, last: r.rows[0]?.field ?? null };
-}
-
-/** Si el visitante respondió al "¿cómo te llamas?", guarda el nombre (corto y sin números). */
-export async function saveVisitorName(q: Queryable, companyId: string, conversationId: string, text: string, terms: string[] = []): Promise<string | null> {
-  const name = nameFromReply(text, terms);
-  if (!name) return null;
-  await q.query('UPDATE chat_sessions SET visitor_name = COALESCE(visitor_name, $3), updated_at = now() WHERE id = $1 AND company_id = $2', [conversationId, companyId, name]);
-  return name;
+/** Últimos mensajes de la conversación (sin el actual), para que el modelo tenga el hilo completo. */
+export async function recentTurns(q: Queryable, companyId: string, conversationId: string, excludeId: string, limit = 6) {
+  const r = await q.query<{ sender_type: SenderType; content: string }>(
+    `SELECT sender_type, content FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND id <> $3
+     ORDER BY created_at DESC, id DESC LIMIT $4`, [companyId, conversationId, excludeId, limit]);
+  return r.rows.reverse().map((m) => ({ role: m.sender_type === 'USER' ? 'user' as const : 'assistant' as const, content: m.content }));
 }
 
 /** La página avisa que el visitante sigue activo (en cualquier parte del sitio). Si estaba marcado como ausente, se reabre. */

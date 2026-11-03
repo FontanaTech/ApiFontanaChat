@@ -30,16 +30,18 @@ describe('toma de control del chatbot', () => {
     expect(hello.status).toBe(200);
     expect(hello.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
 
-    // Pide un asesor sin haber indicado la cartera: primero se le piden los datos que faltan.
-    const ask = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
-    expect(ask.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
-    expect(ask.body.message).toMatch(/cartera/i);
-    const human = await visitor.post('/chat', { message: 'general', live: true });
+    // Ya dio nombre y documento y la empresa tiene una sola cartera activa: pedir un asesor pasa directo a la cola,
+    // sin preguntar una cartera que no hay que elegir.
+    const human = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
     expect(human.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(human.body.message).toMatch(/Ya tengo tus datos/);
+    expect(human.body.message).not.toMatch(/cartera/i);
     conversationId = human.body.conversation.id;
     const snapshot = await visitor.get('/conversation');
     expect(snapshot.body.conversation).toMatchObject({ id: conversationId, visitor_name: 'Visitante Demo', document: '10000001' });
-    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER', 'BOT', 'USER']);
+    // La única cartera queda asignada: el panel la muestra y se puede remitir a WhatsApp sin elegirla.
+    expect(snapshot.body.conversation.portfolio_id).toBeTruthy();
+    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER', 'SYSTEM']);
   });
 
   it('un asesor toma el chat de forma exclusiva y el bot queda pausado', async () => {
@@ -146,16 +148,21 @@ describe('tomar control sin elegir asesor', () => {
 });
 
 describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
-  it('si no sabe responder pide los datos primero y, ya en espera, sigue contestando', async () => {
+  it('si no sabe responder ofrece un asesor; si el visitante contesta con sus datos pasa a la cola y sigue conversando', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     const unknown = await guest.post('/chat', { message: 'Skdjbdd', live: true });
     expect(unknown.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
-    expect(unknown.body.message).toMatch(/nombre/i);
+    // Ofrece, no obliga: no pide datos ni lo pasa a la cola sin que el visitante quiera.
+    expect(unknown.body.message).toMatch(/¿Quieres que te comunique con un asesor\?$/);
+    expect(unknown.body.message).not.toMatch(/nombre|documento/i);
     const data = await guest.post('/chat', { message: 'Pedro Gómez 30000003 general', live: true });
     expect(data.body.conversation.status).toBe('EN_ESPERA_ASESOR');
+    const snap = await guest.get('/conversation');
+    expect(snap.body.conversation).toMatchObject({ visitor_name: 'Pedro Gómez', document: '30000003' });
     const more = await guest.post('/chat', { message: 'hola', live: true });
     expect(more.status).toBe(200);
     expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(more.body.message).not.toMatch(/documento|cartera/i);
   });
 });
 
@@ -171,26 +178,29 @@ describe('consistencia de las respuestas del bot', () => {
 });
 
 describe('continuidad al pedir los datos', () => {
-  it('agradece cada dato y pide el siguiente sin pasar a un asesor', async () => {
+  it('pregunta el nombre una sola vez y agradece los datos que el visitante da por su cuenta, sin insistir ni pasar a un asesor', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     const who = await guest.post('/chat', { message: 'que eres', live: true });
     expect(who.body.message).toMatch(/asistente virtual/i);
-    expect(who.body.message).toMatch(/cómo te llamas/i);
+    expect(who.body.message).toMatch(/¿Con quién tengo el gusto\?$/);
 
     const name = await guest.post('/chat', { message: 'soy juan', live: true });
     expect(name.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
-    expect(name.body.message).toMatch(/Mucho gusto, Juan/);
-    expect(name.body.message).toMatch(/documento/i);
-    expect(name.body.message).not.toMatch(/Esa consulta la atiende mejor un asesor/);
+    expect(name.body.message).toMatch(/^Mucho gusto, Juan\./);
+    // Solo quería información: no se le pide la cédula ni la cartera por iniciativa del bot.
+    expect(name.body.message).not.toMatch(/documento|cartera|asesor/i);
 
     const doc = await guest.post('/chat', { message: '1002003004', live: true });
+    expect(doc.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     expect(doc.body.message).toMatch(/ya tengo tu número de documento/i);
-    expect(doc.body.message).toMatch(/cartera/i);
 
-    const wallet = await guest.post('/chat', { message: 'general', live: true });
-    expect(wallet.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
-    expect(wallet.body.message).toMatch(/anoté la cartera/i);
-    expect(wallet.body.message).toMatch(/Ya tengo tus datos/);
+    // "ok" nunca es un nombre y el bot no vuelve a preguntar el nombre.
+    const ok = await guest.post('/chat', { message: 'ok', live: true });
+    expect(ok.body.message).toMatch(/Con gusto/);
+    const again = await guest.post('/chat', { message: 'que eres', live: true });
+    expect(again.body.message).not.toMatch(/Con quién tengo el gusto/);
+    const snap = await guest.get('/conversation');
+    expect(snap.body.conversation).toMatchObject({ visitor_name: 'Juan', document: '1002003004', status: 'BOT_ACTIVO' });
   });
 
   it('al pedir un asesor mantiene el hilo: agradece lo recibido y solo pide lo que falta', async () => {
@@ -207,4 +217,30 @@ describe('continuidad al pedir los datos', () => {
     expect(done.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
     expect(done.body.message).toMatch(/^Gracias, Juan\./);
   });
+});
+
+describe('reglas ordenadas: el bot entiende los datos aunque vengan en frases largas', () => {
+  it('caso real: corrige el nombre, toma documento y "cartera de prueba" (plural/singular) y pasa a la cola sin repetir', async () => {
+    await manager.post(`/companies/${fixture.companyId}/portfolios`, { key: 'pruebas', name: 'Cartera de pruebas' });
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    const ask = await guest.post('/chat', { message: 'necesito hablar con un asesor', live: true });
+    expect(ask.body.message).toMatch(/Te comunico con un asesor/);
+    const name = await guest.post('/chat', { message: 'te estoy diciendo que mi nombre es Juan ESTEBAN', live: true });
+    expect(name.body.message).toMatch(/^Gracias, Juan\./);
+    expect(name.body.message).not.toMatch(/tu nombre/);
+    expect(name.body.message).not.toMatch(/Esa consulta la atiende mejor/);
+    const done = await guest.post('/chat', { message: '1021803088 NUMERO DE DOCUMENTO Y MI CARTERA ES CARTERA DE PRUEBA', live: true });
+    expect(done.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    const snap = await guest.get('/conversation');
+    expect(snap.body.conversation).toMatchObject({ visitor_name: 'Juan Esteban', document: '1021803088' });
+    const portfolios = await manager.get(`/companies/${fixture.companyId}/portfolios`);
+    expect(snap.body.conversation.portfolio_id).toBe(portfolios.body.items.find((p: any) => p.key === 'pruebas').id);
+    // El tema para el asesor/WhatsApp no es un dato ("mi nombre es…").
+    expect(snap.body.conversation.subject).not.toMatch(/nombre es/i);
+    // Sigue en espera y el bot sigue atendiendo sin volver a pedir datos.
+    const more = await guest.post('/chat', { message: 'hola', live: true });
+    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(more.body.message).not.toMatch(/documento|cartera/i);
+  });
+
 });

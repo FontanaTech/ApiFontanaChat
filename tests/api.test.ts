@@ -787,3 +787,18 @@ describe('auditoría', () => {
     expect((await sup.del(`/companies/${A.companyId}/advisors/${A.advisorId}`)).status).toBe(404);
   });
 });
+
+describe('chat en vivo con modelo', () => {
+  it('el modelo recibe el estado de la conversación y el hilo guardado en el servidor', async () => {
+    const guest = await publicClient(env, 'co-c', 'https://site-c.test');
+    await guest.post('/chat', { message: 'hola, me llamo Ana María', live: true });
+    env.llm.impl = async () => JSON.stringify({ intent: 'clarify', answer: '¿Sobre qué tema necesitas información, Ana?', sectionSlug: null });
+    const r = await guest.post('/chat', { message: 'quisiera saber algo de ustedes por favor', live: true });
+    expect(r.body.type).toBe('answer');
+    expect(r.body.message).toMatch(/^¿Sobre qué tema necesitas información, Ana\?/);
+    const sent = env.llm.calls.at(-1)!;
+    expect(sent[0].content).toContain('Nombre del visitante: Ana María');
+    expect(sent[0].content).toContain('NO los pidas');
+    expect(sent.some((m) => m.role === 'user' && m.content.includes('me llamo Ana María'))).toBe(true);
+  });
+});

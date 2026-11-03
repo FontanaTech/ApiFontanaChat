@@ -118,7 +118,7 @@ export function liveChatController(deps: AppDeps) {
         )).rows[0];
         const message = (await q.query<any>(
           `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content)
-           VALUES ($1,$2,'SYSTEM','Un asesor de FontanaWeb ha tomado tu solicitud y continuará la atención por este medio.') RETURNING *`,
+           VALUES ($1,$2,'SYSTEM','Un asesor tomó tu solicitud y continuará la atención por este medio.') RETURNING *`,
           [cid(req), before.id],
         )).rows[0];
         await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, action) VALUES ($1,$2,$3,'TAKE')`, [cid(req), before.id, advisorId]);
