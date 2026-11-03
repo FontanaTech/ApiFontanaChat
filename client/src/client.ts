@@ -263,25 +263,29 @@ export class FontanaChatClient {
       const signature = `${snapshot.conversation?.status ?? ''}:${snapshot.messages.at(-1)?.id ?? ''}`;
       if (!stopped && signature !== last) { last = signature; onChange(snapshot); }
     };
+    let socketOpen = false;
+    // El sondeo corre SIEMPRE como red de seguridad (más lento si el WebSocket está abierto): si el WebSocket
+    // se conecta pero no entrega (proxy, varias instancias del servidor), el asesor se ve igual sin recargar.
     const poll = async () => {
       try { deliver(await this.getConversation()); } catch { /* el siguiente ciclo reintenta */ }
-      if (!stopped) timer = setTimeout(poll, Math.max(750, intervalMs));
+      if (!stopped) timer = setTimeout(poll, socketOpen ? Math.max(3000, intervalMs * 2) : Math.max(750, intervalMs));
     };
-    const fallback = () => { if (!timer && !stopped) timer = setTimeout(poll, 0); };
+    timer = setTimeout(poll, 0);
     void this.getSession().then((session) => {
-      if (stopped || typeof WebSocket === 'undefined') return fallback();
+      if (stopped || typeof WebSocket === 'undefined') return;
       const url = new URL(`${this.base}/live`);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(url, ['fontanachat', `fc-token.${session.token}`]);
+      socket.addEventListener('open', () => { socketOpen = true; });
       socket.addEventListener('message', (event) => {
         try {
           const packet = JSON.parse(String(event.data));
           if (packet.type === 'snapshot') deliver(packet.data as ConversationSnapshot);
         } catch { /* paquete inválido: se ignora */ }
       });
-      socket.addEventListener('error', () => { socket?.close(); fallback(); });
-      socket.addEventListener('close', () => fallback());
-    }).catch(fallback);
+      socket.addEventListener('error', () => { socketOpen = false; });
+      socket.addEventListener('close', () => { socketOpen = false; });
+    }).catch(() => undefined);
     return () => { stopped = true; clearTimeout(timer); socket?.close(1000, 'Widget cerrado'); };
   }
 
