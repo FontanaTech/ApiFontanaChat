@@ -107,24 +107,50 @@ export function publicController(deps: AppDeps) {
       deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: turn.message.id, sender: 'USER' });
       if (!turn.botMayReply) {
         if (turn.escalated) deps.live.publish(company.id, 'chat_status', { conversationId: turn.conversation.id, status: turn.conversation.status });
+        const first = turn.conversation.visitor_name?.split(' ')[0];
         res.json({ type: 'live', message: turn.escalated
-          ? 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.'
+          ? `${first ? `Gracias, ${first}. ` : ''}Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.`
           : 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: turn.conversation.status } });
         return;
       }
       // Pidió un asesor sin haber dado sus datos: se le piden primero (nombre, documento y cartera) y luego pasa a la cola.
       if (turn.needsData) {
-        const prompt = handoffDataPrompt(turn.needsData.missing, turn.needsData.portfolios, '¡Claro! Te comunico con un asesor. Para que pueda ayudarte desde el primer mensaje,');
+        const first = turn.conversation.visitor_name?.split(' ')[0];
+        const lead = turn.needsData.continuing
+          ? `Gracias${first ? `, ${first}` : ''}. Para pasarte con un asesor aún necesito que`
+          : '¡Claro! Te comunico con un asesor. Para que pueda ayudarte desde el primer mensaje,';
+        const prompt = handoffDataPrompt(turn.needsData.missing, turn.needsData.portfolios, lead).replace('que escríbeme por favor', 'me escribas');
         const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, prompt, false, { kind: 'data_request', field: 'handoff' });
         if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
         res.json({ type: 'answer', message: prompt, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } });
         return;
       }
-      // Si el bot había pedido el nombre, la respuesta del visitante es el nombre.
-      const requests = await dataRequestState(deps.db, company.id, turn.conversation.id);
-      if (!turn.conversation.visitor_name && requests.last === 'name') {
-        turn.conversation.visitor_name = await saveVisitorName(deps.db, company.id, turn.conversation.id, body.message);
+      // Si el bot acababa de pedir un dato (nombre, documento o cartera) y el visitante lo dio, se agradece y se sigue
+      // con el siguiente dato sin pasar por el modelo: así la conversación mantiene continuidad.
+      const dataField = turn.lastBotField === 'name' || turn.lastBotField === 'document' || turn.lastBotField === 'portfolio' ? turn.lastBotField : null;
+      if (dataField) {
+        const conv = turn.conversation;
+        const portfolios = await listPortfolios(deps.db, company.id, true);
+        let ack: string | null = null;
+        if (dataField === 'name' && !conv.visitor_name) {
+          const name = await saveVisitorName(deps.db, company.id, conv.id, body.message, portfolios.flatMap((p) => [p.key, p.name]));
+          if (name) { conv.visitor_name = name; ack = `Mucho gusto, ${name}.`; }
+        } else if (dataField === 'document' && conv.document) {
+          ack = 'Gracias, ya tengo tu número de documento.';
+        } else if (dataField === 'portfolio' && conv.portfolio_id) {
+          const chosen = portfolios.find((p) => p.id === conv.portfolio_id)?.name;
+          ack = chosen ? `Gracias, anoté la cartera ${chosen}.` : 'Gracias, anoté la cartera.';
+        }
+        if (ack) {
+          const next = !conv.visitor_name ? 'name' : !conv.document ? 'document' : !conv.portfolio_id && portfolios.length > 0 ? 'portfolio' : null;
+          const text = next ? `${ack} ${dataRequestText(next, portfolios.map((p) => p.name))}` : `${ack} Ya tengo tus datos. ¿En qué puedo ayudarte?`;
+          const saved = await finishBotTurn(deps.db, company.id, conv.id, text, false, next ? { kind: 'data_request', field: next } : {});
+          if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: conv.id, messageId: saved.message.id, sender: 'BOT' });
+          res.json({ type: 'answer', message: text, conversation: { id: conv.id, status: 'BOT_ACTIVO' } });
+          return;
+        }
       }
+      const requests = await dataRequestState(deps.db, company.id, turn.conversation.id);
       const reply = await answerChat({
         db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore,
         budget: deps.budget, notify: deps.live.publish, liveEscalation: true,

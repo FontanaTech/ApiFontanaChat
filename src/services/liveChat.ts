@@ -52,12 +52,14 @@ export function handoffDataPrompt(missing: Array<'name' | 'document' | 'portfoli
 }
 
 /** Extrae el nombre de una respuesta como "Juan Pérez 1002003 Flamingo" quitando documento y cartera. */
-function nameFromReply(message: string, terms: string[]): string | null {
+export function nameFromReply(message: string, terms: string[] = []): string | null {
+  // Una pregunta o una solicitud no es un nombre.
+  if (/[?¿]/.test(message) || /^\s*(que|qué|quien|quién|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quiero|necesito|puedo|tienen|hola|buenas|gracias)\b/i.test(message)) return null;
   let t = message.replace(/\d+/g, ' ');
   for (const term of terms) if (term) t = t.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ');
-  t = t.replace(/\b(me llamo|mi nombre es|soy|nombre|documento|cedula|cédula|cc|cartera|area|área)\b/gi, ' ').replace(/[,.;:-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  t = t.replace(/\b(me llamo|mi nombre es|mi nombre|soy|nombre|documento|cedula|cédula|cc|cartera|area|área)\b/gi, ' ').replace(/[,.;:-]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (t.length < 2 || t.length > 60 || t.split(' ').length > 5 || HUMAN_RE.test(normalize(t))) return null;
-  return t;
+  return t.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
 }
 
 // "Eres una persona?" o "persona natural" no son una solicitud de asesor; "hablar con una persona" sí.
@@ -89,10 +91,13 @@ export async function ensureConversation(
   )).rows[0];
 }
 
+export type DataField = 'name' | 'document' | 'portfolio';
+export interface NeedsData { missing: DataField[]; portfolios: string[]; continuing: boolean }
+
 export async function startUserTurn(
   db: Db, company: Company, publicSession: PublicSession, message: string,
   profile: { portfolioKey?: string; document?: string; name?: string; subject?: string } = {},
-): Promise<{ conversation: LiveChatSession; message: ChatMessage; botMayReply: boolean; escalated: boolean; created: boolean; needsData: { missing: Array<'name' | 'document' | 'portfolio'>; portfolios: string[] } | null }> {
+): Promise<{ conversation: LiveChatSession; message: ChatMessage; botMayReply: boolean; escalated: boolean; created: boolean; needsData: NeedsData | null; lastBotField: string | null }> {
   return db.tx(async (q) => {
     const existed = await q.query('SELECT 1 FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [company.id, publicSession.id]);
     const inferred = { ...profile };
@@ -110,13 +115,15 @@ export async function startUserTurn(
     if (locked.status === 'CERRADO' || locked.status === 'REMITIDO_WHATSAPP') throw conflict('La conversación ya finalizó');
     let current = locked;
     let escalate = false;
-    let needsData: { missing: Array<'name' | 'document' | 'portfolio'>; portfolios: string[] } | null = null;
+    let needsData: NeedsData | null = null;
+    let lastBotField: string | null = null;
     if (locked.status === 'BOT_ACTIVO') {
       // Si el bot ya pidió los datos para pasar con un asesor, esta respuesta los completa.
       const lastBot = (await q.query<{ field: string | null }>(
         `SELECT metadata->>'field' AS field FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT'
          ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, locked.id])).rows[0];
-      const awaiting = lastBot?.field === 'handoff';
+      lastBotField = lastBot?.field ?? null;
+      const awaiting = lastBotField === 'handoff';
       const asked = await handoffAsked(q, company.id, locked.id);
       const isQuestion = /\?|^\s*(que|qué|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quien|quién)\b/i.test(message) || message.trim().split(/\s+/).length > 7;
       if (asked > 0 && !current.visitor_name && !isQuestion) {
@@ -127,7 +134,7 @@ export async function startUserTurn(
       if (explicit || asked > 0) {
         const gaps = await handoffGaps(q, company.id, current, asked);
         if (gaps.missing.length === 0 || asked >= MAX_HANDOFF_DATA_REQUESTS) escalate = true;
-        else if (explicit || (awaiting && !isQuestion)) needsData = { missing: gaps.missing, portfolios: gaps.portfolios };
+        else if (explicit || (awaiting && !isQuestion)) needsData = { missing: gaps.missing, portfolios: gaps.portfolios, continuing: awaiting };
         // Si hizo otra pregunta mientras faltan datos, el bot la responde y se los vuelve a pedir después.
       }
     }
@@ -141,7 +148,7 @@ export async function startUserTurn(
       `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content) VALUES ($1,$2,'USER',$3) RETURNING *`,
       [company.id, locked.id, message],
     )).rows[0];
-    return { conversation, message: saved, botMayReply: !escalate && (nextStatus === 'BOT_ACTIVO' || nextStatus === 'EN_ESPERA_ASESOR'), escalated: escalate, created: existed.rows.length === 0, needsData };
+    return { conversation, message: saved, botMayReply: !escalate && (nextStatus === 'BOT_ACTIVO' || nextStatus === 'EN_ESPERA_ASESOR'), escalated: escalate, created: existed.rows.length === 0, needsData, lastBotField };
   });
 }
 
@@ -183,11 +190,9 @@ export async function dataRequestState(q: Queryable, companyId: string, conversa
 }
 
 /** Si el visitante respondió al "¿cómo te llamas?", guarda el nombre (corto y sin números). */
-export async function saveVisitorName(q: Queryable, companyId: string, conversationId: string, text: string): Promise<string | null> {
-  const name = text.replace(/^(me llamo|mi nombre es|soy)\s+/i, '').trim();
-  if (name.length < 2 || name.length > 60 || /\d/.test(name) || name.split(/\s+/).length > 5) return null;
-  // Una pregunta o una solicitud no es un nombre.
-  if (/[?¿]/.test(name) || /^(que|qué|quien|quién|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quiero|necesito|puedo|tienen|hola)\b/i.test(name) || HUMAN_RE.test(normalize(name))) return null;
+export async function saveVisitorName(q: Queryable, companyId: string, conversationId: string, text: string, terms: string[] = []): Promise<string | null> {
+  const name = nameFromReply(text, terms);
+  if (!name) return null;
   await q.query('UPDATE chat_sessions SET visitor_name = COALESCE(visitor_name, $3), updated_at = now() WHERE id = $1 AND company_id = $2', [conversationId, companyId, name]);
   return name;
 }

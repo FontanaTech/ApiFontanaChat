@@ -169,3 +169,42 @@ describe('consistencia de las respuestas del bot', () => {
     }
   });
 });
+
+describe('continuidad al pedir los datos', () => {
+  it('agradece cada dato y pide el siguiente sin pasar a un asesor', async () => {
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    const who = await guest.post('/chat', { message: 'que eres', live: true });
+    expect(who.body.message).toMatch(/asistente virtual/i);
+    expect(who.body.message).toMatch(/cómo te llamas/i);
+
+    const name = await guest.post('/chat', { message: 'soy juan', live: true });
+    expect(name.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(name.body.message).toMatch(/Mucho gusto, Juan/);
+    expect(name.body.message).toMatch(/documento/i);
+    expect(name.body.message).not.toMatch(/Esa consulta la atiende mejor un asesor/);
+
+    const doc = await guest.post('/chat', { message: '1002003004', live: true });
+    expect(doc.body.message).toMatch(/ya tengo tu número de documento/i);
+    expect(doc.body.message).toMatch(/cartera/i);
+
+    const wallet = await guest.post('/chat', { message: 'general', live: true });
+    expect(wallet.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(wallet.body.message).toMatch(/anoté la cartera/i);
+    expect(wallet.body.message).toMatch(/Ya tengo tus datos/);
+  });
+
+  it('al pedir un asesor mantiene el hilo: agradece lo recibido y solo pide lo que falta', async () => {
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    const ask = await guest.post('/chat', { message: 'quiero hablar con un asesor', live: true });
+    expect(ask.body.message).toMatch(/Te comunico con un asesor/);
+    const partial = await guest.post('/chat', { message: 'Juan Pérez', live: true });
+    expect(partial.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(partial.body.message).toMatch(/^Gracias, Juan/);
+    expect(partial.body.message).not.toMatch(/Te comunico/);
+    expect(partial.body.message).not.toMatch(/tu nombre/i);
+    expect(partial.body.message).toMatch(/documento/i);
+    const done = await guest.post('/chat', { message: '2003004005 general', live: true });
+    expect(done.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(done.body.message).toMatch(/^Gracias, Juan\./);
+  });
+});
