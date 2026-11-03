@@ -11,7 +11,7 @@ import { eligibleRecipients } from '../services/assignment';
 import { answerChat } from '../services/chat';
 import { createHandoff } from '../services/handoff';
 import { parseUserAgent, visitorHash } from '../utils/userAgent';
-import { dataRequestState, finishBotTurn, publicConversation, saveVisitorName, touchConversation, startUserTurn } from '../services/liveChat';
+import { dataRequestState, finishBotTurn, handoffDataPrompt, handoffGaps, MAX_HANDOFF_DATA_REQUESTS, publicConversation, saveVisitorName, touchConversation, startUserTurn } from '../services/liveChat';
 
 /** Veces que el bot pide datos de identificación antes de pasar el caso a un asesor. */
 const MAX_DATA_REQUESTS = 3;
@@ -114,10 +114,7 @@ export function publicController(deps: AppDeps) {
       }
       // Pidió un asesor sin haber dado sus datos: se le piden primero (nombre, documento y cartera) y luego pasa a la cola.
       if (turn.needsData) {
-        const parts = turn.needsData.missing.map((f) => f === 'name' ? 'tu nombre' : f === 'document' ? 'tu número de documento'
-          : `la cartera o área de tu consulta (${turn.needsData!.portfolios.join(', ')})`);
-        const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts.at(-1)}` : parts[0];
-        const prompt = `¡Claro! Te comunico con un asesor. Para que pueda ayudarte desde el primer mensaje, escríbeme por favor ${list}.`;
+        const prompt = handoffDataPrompt(turn.needsData.missing, turn.needsData.portfolios, '¡Claro! Te comunico con un asesor. Para que pueda ayudarte desde el primer mensaje,');
         const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, prompt, false, { kind: 'data_request', field: 'handoff' });
         if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
         res.json({ type: 'answer', message: prompt, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } });
@@ -132,20 +129,46 @@ export function publicController(deps: AppDeps) {
         db: deps.db, llm: deps.llm, contextMaxChars: deps.cfg.chatContextMaxChars, fastScore: deps.cfg.chatFastScore,
         budget: deps.budget, notify: deps.live.publish, liveEscalation: true,
       }, company, session!, body.message, body.history);
-      // Datos de identificación que faltan: se piden de forma amable, de a uno, junto con la respuesta del bot.
-      const missing = !turn.conversation.visitor_name ? 'name' : !turn.conversation.document ? 'document' : !turn.conversation.portfolio_id ? 'portfolio' : null;
+
+      // Ya en espera de un asesor: el bot sigue ayudando hasta que alguien tome el control.
+      if (turn.conversation.status === 'EN_ESPERA_ASESOR') {
+        const waitText = reply.type === 'answer' ? reply.message
+          : 'Ya avisé a un asesor y continuará por este mismo chat. Mientras tanto, cuéntame si necesitas información de nuestros servicios.';
+        const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, waitText, false);
+        if (saved.message) deps.live.publish(company.id, 'chat_message', { conversationId: turn.conversation.id, messageId: saved.message.id, sender: 'BOT' });
+        if (saved.conversation.status === 'TOMADO_POR_ASESOR') {
+          res.json({ type: 'live', message: 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
+          return;
+        }
+        res.json({ type: 'answer', message: waitText, link: reply.type === 'answer' ? reply.link : undefined, conversation: { id: turn.conversation.id, status: 'EN_ESPERA_ASESOR' } });
+        return;
+      }
+
       let text = reply.message;
-      let escalate = reply.type !== 'answer';
+      let escalate = false;
       let metadata: Record<string, unknown> = {};
-      if (!escalate && missing) {
-        if (requests.asked >= MAX_DATA_REQUESTS) {
-          // El visitante no completó los datos: el caso pasa a un asesor/líder del panel, que los pedirá.
-          escalate = true;
-          text = `${reply.message} Un asesor continuará tu caso por este mismo chat y te ayudará con los datos que falten.`;
+      if (reply.type !== 'answer') {
+        // El bot no puede resolverlo: antes de pasar a un asesor reúne nombre, documento y cartera.
+        const gaps = await handoffGaps(deps.db, company.id, turn.conversation);
+        if (gaps.missing.length > 0 && gaps.asked < MAX_HANDOFF_DATA_REQUESTS) {
+          text = handoffDataPrompt(gaps.missing, gaps.portfolios, 'Para que un asesor pueda ayudarte con esto,');
+          metadata = { kind: 'data_request', field: 'handoff' };
         } else {
-          const portfolios = missing === 'portfolio' ? await listPortfolios(deps.db, company.id, true) : [];
-          text = `${reply.message} ${dataRequestText(missing, portfolios.map((p) => p.name))}`;
-          metadata = { kind: 'data_request', field: missing };
+          escalate = true;
+        }
+      } else {
+        // Datos de identificación que faltan: se piden de forma amable, de a uno, junto con la respuesta del bot.
+        const missing = !turn.conversation.visitor_name ? 'name' : !turn.conversation.document ? 'document' : !turn.conversation.portfolio_id ? 'portfolio' : null;
+        if (missing) {
+          if (requests.asked >= MAX_DATA_REQUESTS) {
+            // El visitante no completó los datos: el caso pasa a un asesor/líder del panel, que los pedirá.
+            escalate = true;
+            text = `${reply.message} Un asesor continuará tu caso por este mismo chat y te ayudará con los datos que falten.`;
+          } else {
+            const portfolios = missing === 'portfolio' ? await listPortfolios(deps.db, company.id, true) : [];
+            text = `${reply.message} ${dataRequestText(missing, portfolios.map((p) => p.name))}`;
+            metadata = { kind: 'data_request', field: missing };
+          }
         }
       }
       const saved = await finishBotTurn(deps.db, company.id, turn.conversation.id, text, escalate, metadata);
@@ -154,8 +177,8 @@ export function publicController(deps: AppDeps) {
       });
       if (saved.conversation.status !== 'BOT_ACTIVO') deps.live.publish(company.id, 'chat_status', { conversationId: turn.conversation.id, status: saved.conversation.status });
       res.json(saved.conversation.status === 'BOT_ACTIVO'
-        ? { ...reply, message: text, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
-        : { type: 'live', message: saved.message?.content ?? 'Tu mensaje fue enviado al asesor.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
+        ? { ...reply, type: 'answer', message: text, conversation: { id: turn.conversation.id, status: 'BOT_ACTIVO' } }
+        : { type: 'live', message: saved.message?.content ?? 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.', conversation: { id: turn.conversation.id, status: saved.conversation.status } });
     },
 
     async ping(req: Request, res: Response) {

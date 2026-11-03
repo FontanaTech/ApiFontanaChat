@@ -144,3 +144,17 @@ describe('tomar control sin elegir asesor', () => {
     expect(reply.status).toBe(201);
   });
 });
+
+describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
+  it('si no sabe responder pide los datos primero y, ya en espera, sigue contestando', async () => {
+    const guest = await publicClient(env, fixture.slug, fixture.origin);
+    const unknown = await guest.post('/chat', { message: 'Skdjbdd', live: true });
+    expect(unknown.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(unknown.body.message).toMatch(/nombre/i);
+    const data = await guest.post('/chat', { message: 'Pedro Gómez 30000003 general', live: true });
+    expect(data.body.conversation.status).toBe('EN_ESPERA_ASESOR');
+    const more = await guest.post('/chat', { message: 'hola', live: true });
+    expect(more.status).toBe(200);
+    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
+  });
+});

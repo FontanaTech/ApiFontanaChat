@@ -25,7 +25,31 @@ const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS
   last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`;
 
 /** Veces que se piden nombre, documento y cartera a quien solicita un asesor antes de pasarlo igual a la cola. */
-const MAX_HANDOFF_DATA_REQUESTS = 2;
+export const MAX_HANDOFF_DATA_REQUESTS = 2;
+
+/** Veces que el bot ya pidió los datos para pasar con un asesor en esta conversación. */
+export async function handoffAsked(q: Queryable, companyId: string, conversationId: string): Promise<number> {
+  return (await q.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'field' = 'handoff'`,
+    [companyId, conversationId])).rows[0].n;
+}
+
+/** Datos que aún faltan para pasar la conversación a un asesor (nombre, documento y, si la empresa las usa, cartera). */
+export async function handoffGaps(q: Queryable, companyId: string, conv: Pick<LiveChatSession, 'id' | 'visitor_name' | 'document' | 'portfolio_id'>, asked?: number) {
+  const portfolios = (await q.query<{ name: string }>('SELECT name FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [companyId])).rows.map((p) => p.name);
+  const missing: Array<'name' | 'document' | 'portfolio'> = [];
+  if (!conv.visitor_name) missing.push('name');
+  if (!conv.document) missing.push('document');
+  if (!conv.portfolio_id && portfolios.length > 0) missing.push('portfolio');
+  return { missing, portfolios, asked: asked ?? await handoffAsked(q, companyId, conv.id) };
+}
+
+/** Texto amable que pide los datos que faltan antes de pasar con un asesor. */
+export function handoffDataPrompt(missing: Array<'name' | 'document' | 'portfolio'>, portfolios: string[], lead: string): string {
+  const parts = missing.map((f) => f === 'name' ? 'tu nombre' : f === 'document' ? 'tu número de documento' : `la cartera o área de tu consulta (${portfolios.join(', ')})`);
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}` : parts[0];
+  return `${lead} escríbeme por favor ${list}.`;
+}
 
 /** Extrae el nombre de una respuesta como "Juan Pérez 1002003 Flamingo" quitando documento y cartera. */
 function nameFromReply(message: string, terms: string[]): string | null {
@@ -92,20 +116,18 @@ export async function startUserTurn(
         `SELECT metadata->>'field' AS field FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT'
          ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, locked.id])).rows[0];
       const awaiting = lastBot?.field === 'handoff';
-      if (awaiting && !current.visitor_name) {
+      const asked = await handoffAsked(q, company.id, locked.id);
+      const isQuestion = /\?|^\s*(que|qué|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por qué|quien|quién)\b/i.test(message) || message.trim().split(/\s+/).length > 7;
+      if (asked > 0 && !current.visitor_name && !isQuestion) {
         const name = nameFromReply(message, portfolios.flatMap((p) => [p.key, p.name, ...(p.aliases ?? [])]));
         if (name) current = (await q.query<LiveChatSession>('UPDATE chat_sessions SET visitor_name = $3, updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *', [locked.id, company.id, name])).rows[0];
       }
-      if (HUMAN_RE.test(message) || awaiting) {
-        const missing: Array<'name' | 'document' | 'portfolio'> = [];
-        if (!current.visitor_name) missing.push('name');
-        if (!current.document) missing.push('document');
-        if (!current.portfolio_id && portfolios.length > 0) missing.push('portfolio');
-        const asked = (await q.query<{ n: number }>(
-          `SELECT count(*)::int AS n FROM chat_messages WHERE company_id = $1 AND chat_session_id = $2 AND sender_type = 'BOT' AND metadata->>'field' = 'handoff'`,
-          [company.id, locked.id])).rows[0].n;
-        if (missing.length === 0 || asked >= MAX_HANDOFF_DATA_REQUESTS) escalate = true;
-        else needsData = { missing, portfolios: portfolios.map((p) => p.name) };
+      const explicit = HUMAN_RE.test(message);
+      if (explicit || asked > 0) {
+        const gaps = await handoffGaps(q, company.id, current, asked);
+        if (gaps.missing.length === 0 || asked >= MAX_HANDOFF_DATA_REQUESTS) escalate = true;
+        else if (explicit || (awaiting && !isQuestion)) needsData = { missing: gaps.missing, portfolios: gaps.portfolios };
+        // Si hizo otra pregunta mientras faltan datos, el bot la responde y se los vuelve a pedir después.
       }
     }
     const nextStatus = escalate ? 'EN_ESPERA_ASESOR' : locked.status;
@@ -118,7 +140,7 @@ export async function startUserTurn(
       `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content) VALUES ($1,$2,'USER',$3) RETURNING *`,
       [company.id, locked.id, message],
     )).rows[0];
-    return { conversation, message: saved, botMayReply: nextStatus === 'BOT_ACTIVO', escalated: escalate, created: existed.rows.length === 0, needsData };
+    return { conversation, message: saved, botMayReply: !escalate && (nextStatus === 'BOT_ACTIVO' || nextStatus === 'EN_ESPERA_ASESOR'), escalated: escalate, created: existed.rows.length === 0, needsData };
   });
 }
 
@@ -126,8 +148,9 @@ export async function finishBotTurn(db: Db, companyId: string, conversationId: s
   return db.tx(async (q) => {
     const current = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [conversationId, companyId])).rows[0];
     if (!current) throw notFound('Conversación no encontrada');
-    if (current.status !== 'BOT_ACTIVO') return { conversation: current, message: null as ChatMessage | null };
-    if (escalate) {
+    // El bot responde mientras está activo o mientras el visitante espera a un asesor; al tomar el control se pausa.
+    if (current.status !== 'BOT_ACTIVO' && current.status !== 'EN_ESPERA_ASESOR') return { conversation: current, message: null as ChatMessage | null };
+    if (escalate && current.status === 'BOT_ACTIVO') {
       const conversation = (await q.query<LiveChatSession>(
         `UPDATE chat_sessions SET status = 'EN_ESPERA_ASESOR', waiting_since = now(), last_interaction_at = now(), updated_at = now()
          WHERE id = $1 AND company_id = $2 RETURNING *`, [conversationId, companyId],
