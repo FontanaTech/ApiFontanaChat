@@ -193,6 +193,10 @@ const WAITING = [
 const WA_REFERRAL = 'Te remito con un asesor por WhatsApp: toca el botón para escribirle.';
 /** Remite sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
 const RANDOM_QUEUE = 'Te remito con un asesor de forma aleatoria por WhatsApp: toca el botón para escribirle. Si me indicas tu cartera, te remito con un asesor de esa cartera.';
+/** "Tengo una deuda atrasada y quiero hablar con un asesor" → "Tengo una deuda atrasada": el pedido del asesor no es la consulta. */
+const withoutAdvisorRequest = (subject: string) => subject
+  .replace(/\s*(?:[,;]|\by\b|\bpero\b)?\s*(?:quiero|necesito|quisiera|deseo|requiero|me gustar[ií]a)\s+(?:hablar|comunicarme|que me (?:pasen|comuniquen|atiendan?)|un asesor|una asesora|pasar|contactar)[^.?!]*$/iu, '')
+  .replace(/[\s,;]+$/, '').trim();
 const NO_ADVISOR_WA = 'En este momento no hay un asesor disponible por WhatsApp. Inténtalo de nuevo más tarde o consulta los canales de atención del sitio.';
 const SENSITIVE_START = [
   'Como es un tema personal, lo revisa mejor un asesor.',
@@ -382,7 +386,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   };
 
   /** Texto con que se remite a WhatsApp: si el visitante ya contó su consulta, el mensaje la lleva. */
-  const waText = () => (conv.subject ? `${WA_REFERRAL} El mensaje ya lleva tu consulta.` : WA_REFERRAL);
+  const waReason = withoutAdvisorRequest(conv.subject ?? '');
+  const waText = () => (waReason ? `${WA_REFERRAL} El mensaje ya lleva tu consulta.` : WA_REFERRAL);
   /**
    * Remite al visitante con un asesor por WhatsApp (el número es el de un asesor de su cartera; sin cartera, de una al
    * azar). El mensaje del enlace lleva lo que preguntó y, si no preguntó nada, uno base que pide la información. La
@@ -393,11 +398,12 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     const chosen = active && !conv.portfolio_auto ? active : queuePortfolio;
     let waUrl: string | undefined;
     let handoffId: string | undefined;
-    let said = text;
+    // "Te comunico con un asesor. Te remito con un asesor por WhatsApp" diría lo mismo dos veces.
+    let said = text.replace(/Te comunico con (?:un asesor|otro asesor|uno)\.\s+(?=Te remito)/, '');
     try {
       const r = await createHandoff(db, company, session, {
         idempotencyKey: `chat-live-${chosen?.key ?? 'any'}`, portfolioKeyHint: chosen?.key,
-        name: conv.visitor_name ?? '', reason: conv.subject ?? '',
+        name: conv.visitor_name ?? '', reason: waReason,
       }, notify);
       waUrl = r.handoff.wa_url;
       handoffId = r.handoff.id;

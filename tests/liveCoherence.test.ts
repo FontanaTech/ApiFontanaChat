@@ -258,7 +258,8 @@ describe('coherencia del chat en vivo', () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [withTopic] = await talk(c, 'tengo una deuda atrasada y quiero hablar con un asesor');
     const text = decodeURIComponent(new URL(withTopic.waUrl).searchParams.get('text')!);
-    expect(text).toMatch(/Quiero consultar sobre: .*deuda/i);
+    expect(text).toMatch(/Quiero consultar sobre: tengo una deuda atrasada\. \(Ref\./i);
+    expect(withTopic.message).not.toMatch(/Te comunico con un asesor\. Te remito/);
     expect(withTopic.message).toMatch(/El mensaje ya lleva tu consulta/);
     const d = await publicClient(env, 'coherencia', ORIGIN);
     const [bare] = await talk(d, 'quiero hablar con un asesor');
@@ -381,7 +382,7 @@ describe('coherencia del chat en vivo', () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [offer, yes] = await talk(c, '¿cuánto cuesta el servicio?', 'por favor');
     expect(offer.message).toMatch(/¿Quieres que te comunique con un asesor\?$/);
-    expect(yes.message).toMatch(/^¡Listo! Te comunico con un asesor\./);
+    expect(yes.message).toMatch(/^¡Listo! Te remito con un asesor por WhatsApp/);
     const d = await publicClient(env, 'coherencia', ORIGIN);
     const [, no, mail] = await talk(d, '¿cuánto cuesta el servicio?', 'no', 'sí, ¿cuál es el correo?');
     expect(no.message).toMatch(/¿Hay algo más en lo que te pueda ayudar\?$/);
@@ -832,7 +833,7 @@ describe('revisión 4: conversaciones', () => {
       expect(o.message).toMatch(/¿Quieres que te comunique con un asesor\?$/);
       return r.message as string;
     };
-    expect(await offer('estoy de acuerdo')).toMatch(/^¡Listo! Te comunico con un asesor\./);
+    expect(await offer('estoy de acuerdo')).toMatch(/^¡Listo! Te remito con un asesor por WhatsApp/);
     expect(await offer('no gracias, chao')).toMatch(/^¡(Con gusto|Para servirte)!/);
     expect(await offer('no entiendo')).toMatch(/^(Te explico|Me refiero)/);
     expect(await offer('quiero preguntar otra cosa')).toMatch(/^(¡Claro! Dime, ¿qué quieres preguntar\?|Claro, cuéntame\.)/);
