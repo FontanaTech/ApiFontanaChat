@@ -4,9 +4,9 @@ import type { PublicSession } from '../models/public';
 import type { Db, Queryable } from '../db';
 import { conflict, forbidden, notFound } from '../utils/errors';
 import { normalize } from '../utils/text';
-import { analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isWaitQuestion, isWhyData, mentionsCase, topicText, yesNo } from './intents';
-import { FIRST_NAMES } from './lexicon';
-import { deniedName, extractVisitorData, namedPortfolios, type CaptureContext, type DataField, type Extracted } from './visitorData';
+import { ADVISOR_NEGATED, analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isWaitQuestion, isWhyData, mentionsCase, topicText, yesNo } from './intents';
+import { FIRST_NAMES, PLACES } from './lexicon';
+import { deniedName, extractVisitorData, namedPortfolios, offeredPortfolios, type CaptureContext, type DataField, type Extracted } from './visitorData';
 
 export type ChatStatus = 'BOT_ACTIVO' | 'EN_ESPERA_ASESOR' | 'TOMADO_POR_ASESOR' | 'REMITIDO_WHATSAPP' | 'CERRADO' | 'ABANDONADO';
 export type SenderType = 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM';
@@ -36,6 +36,8 @@ const REFERS_ONE = /\b(pasar|pasarme|pasas|pasame|paseme|comunicar|comunicarme|c
 /** "La primera", "la segunda opción", "la última": elige entre las carteras que nombró el bot. */
 const ORDINALS = ['primero', 'segundo', 'tercero', 'cuarto'];
 const ORDINAL = /^(?:(?:es|seria|creo que)\s+)?(?:la |el )?(primera|primero|segunda|segundo|tercera|tercero|cuarta|cuarto|ultima|ultimo)(?: opcion| de (?:esas|esos|las dos|los dos))?(?: (?:por favor|gracias))?$/;
+/** "Sí", "así es", "correcto", "esa": confirma la única cartera que el bot propuso ("¿Es de General?"). */
+const ONE_YES = /^(?:si+|sip|sisas|claro(?: que si)?|correcto|exacto|asi es|efectivamente|afirmativo|esa|esa es|esa misma|eso|ese|ese es|de esa|si es esa|si esa|si senor|si senora|ok|okey|listo|dale|bueno)(?: (?:gracias|por favor|senor|senora|senorita))?$/;
 
 /**
  * Veces que se piden los datos que faltan a quien va a pasar con un asesor: si el visitante deja de darlos tras
@@ -91,12 +93,14 @@ export interface BotState {
    * así recuerda, p. ej., entre qué carteras le preguntó ("¿Tu consulta es de Flamingo o de Offcorss?").
    */
   collectTexts: string[];
+  /** El último mensaje del bot preguntó el nombre con la oferta de un asesor pendiente ("no me llamo Pedro" tras la oferta). */
+  offerPending: boolean;
 }
 
 export async function botState(q: Queryable, companyId: string, conversationId: string): Promise<BotState> {
-  const rows = (await q.query<{ sender_type: SenderType; kind: string | null; field: string | null; progress: string | null; waived: string | null; content: string }>(
+  const rows = (await q.query<{ sender_type: SenderType; kind: string | null; field: string | null; progress: string | null; waived: string | null; offer: string | null; content: string }>(
     `SELECT sender_type, metadata->>'kind' AS kind, metadata->>'field' AS field, metadata->>'progress' AS progress,
-       metadata->>'waived' AS waived, content FROM chat_messages
+       metadata->>'waived' AS waived, metadata->>'offer' AS offer, content FROM chat_messages
      WHERE company_id = $1 AND chat_session_id = $2 AND sender_type IN ('BOT','SYSTEM') ORDER BY created_at, id`, [companyId, conversationId])).rows;
   let handoffAsks = 0;
   let stalledAsks = 0;
@@ -121,6 +125,7 @@ export async function botState(q: Queryable, companyId: string, conversationId: 
     // Pedir los datos para el asesor también pregunta el nombre: si no lo dio, no se le vuelve a preguntar.
     nameAsked: rows.some((r) => r.kind === 'data_request' && (r.field === 'name' || r.field === 'handoff')),
     lastText: last?.content ?? null,
+    offerPending: last?.sender_type === 'BOT' && last.offer === 'pending',
   };
 }
 
@@ -210,23 +215,32 @@ export async function startUserTurn(
     const asked: CaptureContext['asked'] = !withBot ? (current.status === 'EN_ESPERA_ASESOR' && missing.length > 0 ? 'queue' : null)
       : lastBotField === 'handoff' ? 'handoff'
         : lastBotField === 'name' && !current.visitor_name ? 'name'
-          : lastBot?.kind === 'offer' && !current.visitor_name ? 'offer' : null;
+          : lastBot?.kind === 'offer' ? 'offer' : null;
     // El nombre guardado es una sola palabra poco común ("Comfandi", que dio al preguntarle el nombre): si llega uno
     // completo y claro ("Juan Pérez 1020304050"), lo reemplaza.
     const savedName = current.visitor_name?.trim() ?? '';
     const nameLoose = !!savedName && !/\s/.test(savedName) && !FIRST_NAMES.has(normalize(savedName));
+    // Las carteras que el bot acaba de ofrecer ("¿Es de General, Claro u Offcorss?", "…la cartera de tu consulta (A, B)"),
+    // si falta la cartera. Si su pregunta era solo por la cartera, la respuesta se lee como tal ("Claro", "de Claro").
+    const offer = choosePortfolio && missing.includes('portfolio') && lastBot?.sender_type === 'BOT' && current.status !== 'TOMADO_POR_ASESOR'
+      ? offeredPortfolios(lastBot.content, portfolios) : { list: [], only: false };
+    const offered = offer.list;
     // Con una sola cartera activa no hay nada que elegir: no se busca en el texto (se asigna al pasar a la cola).
     const x = extractVisitorData(message, choosePortfolio ? portfolios : [], {
       asked, missing, companyNumbers: opts.companyNumbers, siteWords: opts.siteWords, nameLoose: withBot && nameLoose, savedName: current.visitor_name,
+      offered: offer.only ? offered.map((p) => p.key) : undefined,
     });
-    // "¿Tu consulta es de Flamingo o de Offcorss?" → "la primera": la cartera es la que nombró el bot en ese orden.
-    if (choosePortfolio && !x.portfolioKey && asked === 'handoff' && missing.includes('portfolio')) {
-      const pick = ORDINAL.exec(normalize(message));
+    if (offered.length > 0 && !x.portfolioKey && (asked === 'handoff' || asked === 'queue')) {
+      const nm = normalize(message);
+      // "¿Tu consulta es de Flamingo o de Offcorss?" → "la primera", "sí, la segunda": la que nombró el bot en ese orden
+      // (entre las que ofreció: no la que el visitante acababa de negar).
+      const pick = ORDINAL.exec(nm.replace(/^(?:(?:si|claro|ok|bueno|listo|dale|pues)\s+)+/, ''));
       if (pick) {
-        const offered = namedPortfolios(lastBot?.content ?? '', portfolios).list;
-        const options = offered.length >= 2 ? offered : portfolios;
-        const chosen = pick[1].startsWith('ultim') ? options.at(-1) : options[ORDINALS.indexOf(pick[1].replace(/a$/, 'o'))];
+        const chosen = pick[1].startsWith('ultim') ? offered.at(-1) : offered[ORDINALS.indexOf(pick[1].replace(/a$/, 'o'))];
         if (chosen) x.portfolioKey = chosen.key;
+      } else if (offer.only && offered.length === 1 && ONE_YES.test(nm)) {
+        // "Entendido, no es Flamingo ni Offcorss. ¿Es de General?" → "sí", "así es", "claro": es esa.
+        x.portfolioKey = offered[0].key;
       }
     }
 
@@ -237,11 +251,14 @@ export async function startUserTurn(
     let name = current.visitor_name;
     // Un nombre suelto no sale de un mensaje que cancela o pregunta para qué ("olvídalo, ¿cuál es el correo?"). Uno que
     // niega otro dato sí lo trae ("Juan Pérez, no tengo la cédula a la mano"): la negativa se lee aparte.
-    const looseOk = x.nameExplicit || !(isCancel(message) || isWhyData(message));
+    // "Ana Ruiz 43123456, si no me atienden hoy mañana vuelvo": aplazar con los datos no cancela.
+    const looseOk = x.nameExplicit || !(isCancel(message, { hasData: !!x.document || !!x.name }) || isWhyData(message));
     if (!looseOk) x.name = undefined;
     const fullName = !!x.name && x.name.trim().split(/\s+/).length >= 2;
-    if (x.name && (!name || (x.nameExplicit && normalize(x.name) !== normalize(name)) || (nameLoose && fullName && normalize(x.name) !== normalize(name)))) {
-      take('name', name && !nameLoose ? name : null);
+    // "Carlos" guardado y ahora "Carlos Ruiz": completa el nombre (no lo corrige).
+    const completes = !!x.name && !!name && normalize(x.name).startsWith(`${normalize(name)} `);
+    if (x.name && (!name || completes || (x.nameExplicit && normalize(x.name) !== normalize(name)) || (nameLoose && fullName && normalize(x.name) !== normalize(name)))) {
+      take('name', name && !nameLoose && !completes ? name : null);
       name = x.name;
     } else if (!x.name && name) {
       // "No me llamo Pedro" con "Pedro" guardado: se borra y el bot lo vuelve a pedir.
@@ -292,14 +309,22 @@ export async function startUserTurn(
     // Mientras se le piden los datos, solo un asunto suyo es el tema ("es por una deuda que ya pagué"); una pregunta
     // por el documento, el correo o la espera no ("¿sirve el pasaporte?", "Juan Pérez 1020304050 y cuál es el correo").
     const collectingReply = asked === 'handoff' && intent !== 'sensitive' && !mentionsCase(normalize(topic)) && !COMMERCIAL_RE.test(nm);
-    // "No soy Pedro, me confundiste" o "no me llamo Pedro" corrigen el nombre: no son el tema.
-    const deniesName = cleared.includes('name') || !!deniedName(message);
+    // "No soy Pedro, me confundiste" o "no me llamo Pedro" corrigen el nombre: no son el tema. "Me llaman cobrando a Juan
+    // Pérez, pero yo no soy Juan Pérez" o "no soy el titular de esa deuda" sí lo son (cuentan su caso).
+    const denied = deniedName(message);
+    const deniesName = cleared.includes('name')
+      || (!!denied && ((!!current.visitor_name && normalize(current.visitor_name).split(' ')[0] === denied.split(' ')[0]) || (!mentionsCase(nm) && nm.split(' ').length <= 8)));
     const topical = topic.split(' ').filter((w) => w.length >= 3).length >= 2 && rest.length > 0 && !dataReply && !collectingReply
       && (withBot ? ['other', 'sensitive', 'human'].includes(intent) : intent === 'sensitive')
       && !isCancel(message) && !isRefuse(message) && !isHold(message) && !isWaitQuestion(message) && !isWhyData(message) && yesNo(message) === null
       && !(x.correction && hadData) && !deniesName;
     // "No me pases con ningún asesor, solo dime el correo": el tema es lo que pide, sin la negativa.
-    const subject = !current.subject && topical ? subjectText(negated ? withoutAdvisorRefusal(message) : message, x).slice(0, 300) : current.subject;
+    let subject = !current.subject && topical ? subjectText(negated ? withoutAdvisorRefusal(message) : message, x).slice(0, 300) : current.subject;
+    // "Necesito un paz y salvo, Juan Pérez" dicho antes de que se reconociera su nombre: al guardarlo, sale del asunto.
+    if (current.subject && subject === current.subject && (captured.includes('name') || captured.includes('document'))) {
+      const cleaned = subjectText(current.subject, { name: name ?? undefined, document: document ?? undefined });
+      if (cleaned) subject = cleaned.slice(0, 300);
+    }
 
     const conversation = (await q.query<LiveChatSession>(
       `UPDATE chat_sessions SET visitor_name = $3, document = $4, portfolio_id = $5, subject = $6, portfolio_auto = $7,
@@ -322,7 +347,13 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const LOOSE_LETTER: Record<string, string> = { a: '[aáà]', e: '[eéè]', i: '[iíì]', o: '[oóò]', u: '[uúüù]', n: '[nñ]' };
 const loosePattern = (word: string) => [...normalize(word)].map((c) => LOOSE_LETTER[c] ?? escapeRe(c)).join('');
 const GREET = String.raw`(?:(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[,!.\s]+)`;
-const INTRO = String.raw`(?:me\s+llamo|mi\s+nombre\s+(?:completo\s+)?es|mi\s+nombre|soy|le\s+escribe|te\s+escribe|les\s+escribe|le\s+habla|te\s+habla|les\s+habla|habla|de\s+parte\s+de)`;
+const INTRO = String.raw`(?:me\s+llamo|mi\s+nombre\s+(?:completo\s+)?es|mi\s+nombre|yo\s+soy|soy|le\s+escribe|te\s+escribe|les\s+escribe|le\s+habla|te\s+habla|les\s+habla|habla|de\s+parte\s+de|atentamente,?|cordialmente,?)`;
+/** "La señora Gloria Ruiz", "el doctor Pedro Gómez", "don Juan": el tratamiento va con el nombre. */
+const TITLE = String.raw`(?:(?:(?:el|la)\s+)?(?:se[ñn]or(?:a|ita)?|do[ñn]a|don|doctor(?:a)?|dra?\.?|ingenier[oa]|abogad[oa])\s+)`;
+/** "Juan Pérez, quien le escribe": lo que sigue al nombre con que firma. */
+const SIGNS = String.raw`(?:,?\s+quien\s+(?:le|les|te)\s+(?:escribe|habla))`;
+/** "…y me dicen Pacho": el apodo tampoco es el tema. */
+const NICK_CLAUSE = /(?:^|[,;]\s*|\s+(?:y|e|pero)\s+)(?:me\s+dicen|me\s+conocen\s+como|ll[aá]mame|ll[aá]meme|me\s+puedes\s+decir|me\s+puede\s+decir)\s+\p{Lu}[\p{L}]+/u;
 /** "Mi cédula es…", "identificado con cédula…", "con NIT…", "y mi cc es…": la frase que acompaña al documento. */
 const DOC_LEAD = String.raw`(?:(?:,\s*|\s+)(?:y|e)\s+)?(?:identificad[oa]s?\s+con\s+|con\s+)?(?:(?:mi|el|la|su)\s+)?(?:n[uú]mero\s+de\s+)?(?:c\.?\s?c\.?|c[eé]dula(?:\s+de\s+(?:ciudadan[ií]a|extranjer[ií]a))?|documento(?:\s+de\s+identidad)?|nit|pasaporte|ppt|identificaci[oó]n|n[uú]mero)?\s*(?:es\s+|no\.?\s*|#\s*|:\s*)?`;
 /**
@@ -339,18 +370,30 @@ export function subjectText(message: string, x: Pick<Extracted, 'document' | 'na
   }
   if (x.name) {
     const name = x.name.split(/\s+/).map(loosePattern).join('\\s+');
-    // Al inicio ("Hola, me llamo Juan Pérez y…", "Juan Pérez quiero…") o en medio con su presentación (", me llamo Ana").
-    s = s.replace(new RegExp(`^\\s*${GREET}?(?:${INTRO}\\s+)?${name}(?![\\p{L}])`, 'iu'), ' ');
-    s = s.replace(new RegExp(`(?:[,;]\\s*|\\s+(?:y|e)\\s+|\\s+)${INTRO}\\s+${name}(?![\\p{L}])`, 'iu'), ' ');
+    // Al inicio ("Hola, me llamo Juan Pérez y…", "Juan Pérez quiero…", "le escribe la señora Martha Cuesta, …").
+    s = s.replace(new RegExp(`^\\s*${GREET}?(?:${INTRO}\\s+)?${TITLE}?${name}${SIGNS}?(?![\\p{L}])`, 'iu'), ' ');
+    // En medio con su presentación (", me llamo Ana", "y yo soy la señora Gloria Ruiz", "Atentamente, Ana Gómez").
+    s = s.replace(new RegExp(`(?:[,;.]\\s*|\\s+(?:y|e)\\s+|\\s+)${INTRO}\\s+${TITLE}?${name}${SIGNS}?(?![\\p{L}])`, 'iu'), ' ');
+    // Suelto entre signos ("tengo una deuda con ustedes, Ana Ruiz", "1020304050, Juan Pérez, necesito…") o, si es
+    // completo, al final ("necesito un paz y salvo Juan Pérez").
+    s = s.replace(new RegExp(`(^|[,;.:!?]\\s*|\\s+(?:y|e)\\s+)${TITLE}?${name}${SIGNS}?(?=\\s*(?:[,;.:!?]|$)|\\s+(?:y|e)\\s+)`, 'iu'), '$1 ');
+    if (x.name.trim().includes(' ')) s = s.replace(new RegExp(`\\s+${TITLE}?${name}\\s*$`, 'iu'), ' ');
+    s = s.replace(NICK_CLAUSE, ' ');
   }
   let out = s.replace(/\s+([,.;:!?])/g, '$1').replace(/([,;:])(?=\s*[,;:.!?])/g, '').replace(/\s{2,}/g, ' ').trim();
   if (s !== message) {
     // Lo que unía los datos con el tema ya no une nada: "y quiero saber…", "y, ¿cuánto debo?", "…con Flamingo y". (Un
     // "qué" del inicio es la pregunta: "¿qué servicios ofrecen?" queda igual.)
-    for (let i = 0; i < 3; i++) out = out.replace(/^[\s,.;:]+/, '').replace(/^(?:y|e|pero|entonces|pues)(?![\p{L}])[\s,]*/iu, '');
+    for (let i = 0; i < 3; i++) {
+      out = out.replace(/^[\s,.;:]+/, '').replace(new RegExp(`^${GREET}`, 'iu'), '').replace(/^(?:y|e|pero|entonces|pues)(?![\p{L}])[\s,]*/iu, '')
+        // "Ana López, mucho gusto. Tengo una deuda…": la cortesía que acompañaba al nombre tampoco es el tema.
+        .replace(/^(?:mucho gusto|un gusto|un placer|encantad[oa]|para servirle|para servirte|a la orden|a sus [oó]rdenes)(?![\p{L}])[\s,.;:!]*/iu, '');
+    }
     out = out.replace(/(?:[\s,;:]+(?:y|e|con|de|del|o))+[\s,;:]*$/iu, '').replace(/[\s,;:]+$/g, '').trim();
-    // "de Bancolombia, queremos cotizar…" (quedó de "soy Laura de Bancolombia"): la empresa va como etiqueta.
-    out = out.replace(/^de\s+((?:\p{Lu}[\p{L}&.-]*)(?:\s+\p{Lu}[\p{L}&.-]*){0,3})\s*[,:]\s*/u, '$1: ');
+    // "de Bancolombia, queremos cotizar…" (quedó de "soy Laura de Bancolombia"): la empresa va como etiqueta. Una ciudad
+    // no ("de Cali, ¿dónde quedan?" sigue diciendo de dónde es).
+    out = out.replace(/^de\s+((?:\p{Lu}[\p{L}&.-]*)(?:\s+\p{Lu}[\p{L}&.-]*){0,3})\s*[,:]\s*/u, (all, label: string) =>
+      (normalize(label).split(' ').some((w) => PLACES.has(w)) ? all : `${label}: `));
   }
   // Lo que queda debe decir algo: "por favor" o "gracias" solos no son un tema.
   const said = normalize(out).replace(/\b(por favor|porfa|porfavor|porfis|plis|gracias|muchas|ok|listo|bueno|pues|si|no|hola|buenas|solo)\b/g, ' ')
@@ -360,10 +403,11 @@ export function subjectText(message: string, x: Pick<Extracted, 'document' | 'na
 
 /**
  * "No me pases con ningún asesor, solo dime el correo" → "solo dime el correo": la negativa al asesor no es el tema.
- * Se quitan las partes de la frase (entre comas o puntos) que solo niegan al asesor o las llamadas.
+ * Se quitan las partes de la frase (entre comas o puntos) que solo niegan al asesor. "No quiero que me llamen más" sí es
+ * parte del caso (quiere que dejen de llamarlo): se queda.
  */
 function withoutAdvisorRefusal(message: string): string {
-  return message.split(/(?<=[,;.!?])/).filter((part) => !(HUMAN_NEGATED.test(normalize(part)) && normalize(topicText(part)).split(' ').filter((w) => w.length >= 3).length < 2))
+  return message.split(/(?<=[,;.!?])/).filter((part) => !(ADVISOR_NEGATED.test(normalize(part)) && normalize(topicText(part)).split(' ').filter((w) => w.length >= 3).length < 2))
     .join('').replace(/^[\s,;.!]+/, '').trim();
 }
 

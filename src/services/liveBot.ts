@@ -8,8 +8,8 @@ import {
   offTopicTexts, type ChatDeps, type ChatMoment, type ChatReply,
 } from './chat';
 import {
-  afterYes, analyze, announcesQuestion, asksWhichDocument, cancelOf, COMMERCIAL_RE, HUMAN_NEGATED, isConfused, isHold, isWaitQuestion, isWhyData,
-  looksLikeQuestion, mentionsCase, negatesAdvisorOnly, refusedFields, refuseQuestion, yesNo,
+  acceptsOffer, afterYes, analyze, announcesQuestion, asksWhichDocument, cancelOf, COMMERCIAL_RE, HUMAN_NEGATED, isConfused, isHold, isSensitive,
+  isWaitQuestion, isWhyData, looksLikeQuestion, mentionsCase, negatesAdvisorOnly, POSTPONE_WHEN, refusedFields, refuseQuestion, yesNo,
 } from './intents';
 import type { LiveNotify } from './liveEvents';
 import {
@@ -17,7 +17,7 @@ import {
   recentTurns, startUserTurn, subjectText, type DataField, type LiveChatSession, type UserTurn,
 } from './liveChat';
 import { COMMON, EVERYDAY, FIRST_NAMES, PLACES, SURNAMES } from './lexicon';
-import { asksForInfo, namedPortfolios, onlyData } from './visitorData';
+import { asksForInfo, namedPortfolios, offeredPortfolios, onlyData } from './visitorData';
 
 /**
  * Turno del chat en vivo. TODAS las reglas del bot están aquí, en este orden, y cada mensaje sigue un único camino:
@@ -75,11 +75,15 @@ function withoutGreeting(text: string, name?: string | null): string {
   if (!g) return text;
   let rest = text.slice(g[0].length);
   const upper = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : text);
-  // "¡Hola, María del Pilar! …", "¡Hola, doña Gloria! …", "¡Hola Andrea, qué gusto saludarte! …": entre "¡" y "!" todo
-  // es el saludo (con el nombre que el modelo haya puesto): se quita entero. Nunca queda un "!" sin su "¡".
+  // "¡Hola, María del Pilar! …", "¡Hola, doña Gloria! …", "¡Hola Andrea, qué gusto saludarte! …", "¡Hola, Mauricio, gracias
+  // por escribirnos, con gusto te cuento lo que hacemos! …": entre "¡" y "!" todo es el saludo (con el nombre que el
+  // modelo haya puesto): se quita entero. Nunca queda un "!" sin su "¡". Si trae la respuesta ("¡Hola, sí atendemos en
+  // Bogotá!"), se deja.
   if (/^¡/.test(text.trimStart())) {
     const close = rest.indexOf('!');
-    if (close >= 0 && close <= 70 && !/[¡?¿]/.test(rest.slice(0, close))) return upper(rest.slice(close + 1).trim());
+    if (close >= 0 && close <= 160 && !/[¡?¿]/.test(rest.slice(0, close)) && !GREETING_CONTENT.test(normalize(rest.slice(0, close)))) {
+      return upper(rest.slice(close + 1).trim());
+    }
   }
   // "Hola Pedro, …": el nombre que sigue al saludo es el del visitante o, si no se sabe, uno de pila conocido (con su
   // tratamiento: "Hola, señora Ruiz.").
@@ -94,6 +98,23 @@ function withoutGreeting(text: string, name?: string | null): string {
   const pause = rest.match(/^\s*[!,.]+\s*/);
   if (!pause) return text; // "Hola" pegado a la frase: no era un saludo aparte
   return upper(rest.slice(pause[0].length));
+}
+/** Lo que hace que un "¡Hola, …!" del modelo traiga la respuesta y no sea solo el saludo. */
+const GREETING_CONTENT = /\b(si|no|atendemos|trabajamos|tenemos|ofrecemos|estamos en|contamos con|manejamos|prestamos|brindamos|somos|integramos|claro que si|quedamos|puedes|puede)\b|\d/;
+/**
+ * "Mucho gusto.", "¡Qué gusto saludarte!", "¿Qué tal, Hernán?" al inicio de la respuesta del modelo (ya sin su saludo):
+ * repetirían la cortesía con que abre el bot ("¡Hola, Julián! Mucho gusto."). Se quitan; si nombran a otra persona, no.
+ */
+const COURTESY_LEAD = /^\s*(?:¡\s*)?(?:[Mm]ucho gusto|[Uu]n gusto|[Uu]n placer|[Ee]ncantad[oa]|[Qq]u[eé] gusto(?: (?:saludarte|saludarlo|saludarla|conocerte))?|[Qq]u[eé] bueno saludarte|¿\s*[Qq]u[eé] tal|¿\s*[Cc][oó]mo (?:est[aá]s|est[aá]|te va|le va))(?:,?\s+(?<who>\p{Lu}[\p{L}]+))?\s*[.!?]+\s*/u;
+function withoutCourtesy(text: string, name?: string | null): string {
+  const first = name ? normalize(name).split(' ')[0] : '';
+  let t = text;
+  for (let i = 0; i < 3; i++) {
+    const m = t.match(COURTESY_LEAD);
+    if (!m || (m.groups?.who && first && normalize(m.groups.who) !== first)) break;
+    t = t.slice(m[0].length);
+  }
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : text;
 }
 /** "Quiero un asesor, pero primero dime el correo": la parte que pregunta otra cosa (o null). */
 function otherQuestion(message: string): string | null {
@@ -190,8 +211,14 @@ const complaintLeads = (you: string) => [`Lamento el inconveniente${you}. Un ase
 const DISSATISFIED = /\b(no me (sirvio|sirve|ayudo|ayudaste|ayudaron|respondio|respondiste|respondieron|resolvio|resolviste|soluciono|solucionaste|aclaro|aclaraste|contesto|contestaste)( de nada| nada)?|no fue lo que (pregunte|pedi|necesitaba|queria|buscaba)|eso no (era|es) lo que (pregunte|pedi|necesitaba|queria|buscaba)|gracias por nada|no sirve de nada|no sirvio de nada|igual no (me )?(sirve|sirvio)|sigo (con la duda|sin entender))\b/;
 /** "Es de Falabella", "por Finandina", "ninguna de esas, es de Movistar": respondió la cartera con una que no es de la empresa. */
 const PORTFOLIO_HINT = /^(es )?(de|con|del|por|la de|el de|cartera|es la|es el)\b|^(ninguna|ninguno|no es ninguna|otra|es otra)\b/;
-/** Se despide ("no gracias, chao", "no, muchas gracias, adiós", "no, ya me voy"). */
-const FAREWELL = /\b(chao|chau|adios|bye|hasta luego|hasta pronto|hasta manana|nos vemos|que (este|estes|esten) bien|buen dia|buena tarde|buena noche|buenas noches|buenas tardes|feliz (dia|tarde|noche)|ya me voy|me voy|bendiciones|que le vaya bien|que te vaya bien)\b/;
+/** "Después te escribo", "luego miro", "mañana te aviso": lo deja para otro momento. */
+const LATER = /\b(?:(?:te|le|les) (?:escribo|escribire|aviso|avisare|llamo|marco|contacto|cuento) (?:luego|despues|mas tarde|manana|en un rato|otro dia)|(?:luego|despues|mas tarde|manana|en un rato|otro dia) (?:te |le |les )?(?:escribo|escribire|aviso|avisare|llamo|marco|contacto|cuento|hablamos|vuelvo|volvere|regreso|miro|reviso))\b/;
+/** Se despide ("no gracias, chao", "no, muchas gracias, adiós", "no, ya me voy", "después te escribo"). */
+const FAREWELL = new RegExp(`\\b(chao|chau|adios|bye|hasta luego|hasta pronto|hasta manana|nos vemos|que (este|estes|esten) bien|buen dia|buena tarde|buena noche|buenas noches|buenas tardes|feliz (dia|tarde|noche)|ya me voy|me voy|bendiciones|que le vaya bien|que te vaya bien)\\b|${LATER.source}`);
+/** Despedidas del bot; a quien lo deja para después, que lo espera. */
+const farewellTexts = (you: string, later = false) => (later
+  ? [`Está bien${you}. Aquí estaré cuando quieras escribirme.`, `Claro${you}, aquí estoy cuando quieras.`]
+  : [`¡Hasta pronto${you}! Aquí estaré si necesitas algo más.`, `¡Que te vaya bien${you}! Si te surge otra duda, escríbeme.`]);
 /** "Gracias, me sirvió mucho", "muy clara la información, gracias", "gracias, voy a revisar": agradece y cierra. */
 const THANKS_WORD = /\b(gracias|agradezco|agradecid[oa]|muy amables?)\b/;
 /** Lo que hace que un mensaje con "gracias" no sea solo un cierre (pide o cuenta algo de su caso o del servicio). */
@@ -294,6 +321,11 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const question = looksLikeQuestion(body.message, rest)
     || (userTurn.captured.length > 0 && !!userTurn.extracted.rest && looksLikeQuestion(userTurn.extracted.rest))
     || (userTurn.captured.length > 0 && !!userTurn.extracted.said && looksLikeQuestion(userTurn.extracted.said));
+  /**
+   * Solo dejaba datos, o corrigió uno sin preguntar nada ("lo escribí mal, es 1020304051", "no es de Flamingo, es de los
+   * de Claro"): basta el acuse de la corrección.
+   */
+  const dataOnly = pureData || (userTurn.replaced.length > 0 && !question && intent !== 'human' && intent !== 'sensitive');
   /** "Sí" a secas (y no "sí, ¿cuál es el correo?" ni "sí, el teléfono"). */
   const yesRest = afterYes(body.message);
   const plainYes = answerTo === 'yes' && yesRest.split(' ').filter((w) => w.length >= 3).length < 2 && !asksForInfo(yesRest)
@@ -315,15 +347,16 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     text: string,
     opts: {
       escalate?: boolean; kind?: 'data_request' | 'offer' | 'handoff_cancel' | 'clarify' | 'hold' | 'closing'; field?: DataField | 'handoff';
-      link?: ChatReply['link']; waived?: DataField[];
+      link?: ChatReply['link']; waived?: DataField[]; offerPending?: boolean;
     } = {},
   ): Promise<LiveResponse> => {
     // `progress`: este pedido de datos responde a un mensaje que sí trajo datos (el visitante está colaborando).
-    // `waived`: datos que el bot deja de pedir en esta toma (el asesor los confirma).
+    // `waived`: datos que el bot deja de pedir en esta toma (el asesor los confirma). `offer`: la oferta de un asesor
+    // sigue pendiente mientras se le pregunta el nombre ("no me llamo Pedro" tras la oferta).
     const metadata = opts.kind
       ? {
         kind: opts.kind, ...(opts.field ? { field: opts.field } : {}), ...(opts.field === 'handoff' && progressed ? { progress: true } : {}),
-        ...(opts.waived?.length ? { waived: opts.waived.join(',') } : {}),
+        ...(opts.waived?.length ? { waived: opts.waived.join(',') } : {}), ...(opts.offerPending ? { offer: 'pending' } : {}),
       }
       : {};
     const saved = await finishBotTurn(db, company.id, conv.id, text, !!opts.escalate, metadata, { assignPortfolioId: opts.escalate ? queuePortfolioId : null });
@@ -402,7 +435,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
         others.length > 0 ? `¿Es de ${orList(others.map((p) => p.name))}? Si no estás seguro, el asesor lo confirma contigo.` : 'El asesor confirma la cartera contigo.',
       ));
     }
-    if (pureData) {
+    if (dataOnly) {
       // Nombró algo que no se guardó (una cartera cuando ya hay otra): no se agradece como si se hubiera anotado.
       if (userTurn.captured.length === 0) {
         return reply(fresh([`Entendido${you}. El asesor lo verá en este mismo chat.`, `Anotado${you}; el asesor lo verá cuando tome tu conversación.`]));
@@ -483,12 +516,18 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   };
 
   const handoffAck = ackText(userTurn, conv, portfolioName, true, phoneOnly);
-  /** Las carteras entre las que el bot preguntó en esta toma ("¿Tu consulta es de Flamingo o de Offcorss?"), si las hubo. */
+  /**
+   * Las carteras entre las que el bot preguntó por última vez en esta toma ("¿Tu consulta es de Flamingo o de Offcorss?",
+   * "Entendido, no es Flamingo ni Offcorss. ¿Es de General?"), si no eran todas. Solo cuentan sus preguntas por la
+   * cartera: una respuesta del sitio que nombra aliados no.
+   */
   const remembered = (() => {
     if (portfolios.length < 3) return null;
     for (const t of [...bot.collectTexts].reverse()) {
-      const said = namedPortfolios(t, portfolios);
-      if (!said.negated && said.list.length >= 2 && said.list.length < portfolios.length) return said.list.map((p) => p.name);
+      if (!/\bcartera\b|¿(?:tu consulta )?es de\b/i.test(t)) continue;
+      const offered = offeredPortfolios(t, portfolios).list;
+      if (offered.length === 0) continue;
+      return offered.length < portfolios.length ? offered.map((p) => p.name) : null;
     }
     return null;
   })();
@@ -522,14 +561,21 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
 
   // R3: el bot ofreció un asesor en su último mensaje.
   if (bot.lastKind === 'offer') {
-    // "No me llamo Pedro": se borró el nombre; no es un "no" a la oferta.
-    if (userTurn.cleared.includes('name')) return reply('Disculpa la confusión. ¿Cómo te llamas?', { kind: 'data_request', field: 'name' });
+    // "No me llamo Pedro": se borró el nombre; no es un "no" a la oferta, que sigue en pie cuando diga cómo se llama.
+    if (userTurn.cleared.includes('name')) return reply('Disculpa la confusión. ¿Cómo te llamas?', { kind: 'data_request', field: 'name', offerPending: true });
     if (pureData) {
-      // Solo dijo su nombre (o lo corrigió: "no me llamo Pedro, me llamo Juan"): todavía no aceptó; la oferta sigue en pie.
-      const nameOnly = userTurn.captured.length > 0 && userTurn.captured.every((f) => f === 'name') && answerTo !== 'yes';
-      if (nameOnly) return reply(offerAdvisor(ackText(userTurn, conv, portfolioName, false)), { kind: 'offer' });
-      // "Sí, con los de Flamingo": acepta y dice su cartera.
-      if (answerTo === 'yes') return collect('start', joinText(`¡Listo${you}! Te comunico con un asesor.`, missing.length > 0 ? dataNotes(userTurn, portfolioName) : ''), '');
+      // "Claro, me llamo Pedro", "dale, Pedro Gómez", "Pedro, sí", "sí, Juan Pérez 1020304050": acepta y da sus datos.
+      const accepts = acceptsOffer(body.message);
+      // "Me llamo Carlos, y no gracias", "no gracias, soy Pedro": da su nombre y no quiere el asesor.
+      const declines = !accepts && (/(?:^|\s)(?:no|nop|nel)(?: gracias| por ahora| todavia| por el momento)?$/.test(n)
+        || (/^(?:no|nop|nel)(?: gracias)?\b/.test(n) && !/\b(no me llamo|no soy|mi nombre no es)\b/.test(n)));
+      if (declines) return reply(fresh([`Está bien${you}. ¿Hay algo más en lo que te pueda ayudar?`, `De acuerdo${you}. ¿Te ayudo con algo más?`]));
+      if (accepts) return collect('start', joinText(`¡Listo${you}! Te comunico con un asesor.`, missing.length > 0 ? dataNotes(userTurn, portfolioName) : ''), '');
+      // Solo dijo, repitió o completó su nombre (o lo corrigió: "no me llamo Pedro, me llamo Juan"): todavía no aceptó;
+      // la oferta sigue en pie.
+      if (userTurn.captured.every((f) => f === 'name')) {
+        return reply(offerAdvisor(userTurn.captured.length > 0 ? ackText(userTurn, conv, portfolioName, false) : `Gracias${you}.`), { kind: 'offer' });
+      }
       return collect('start');
     }
     // "No entiendo", "¿cómo así?": no dijo que no; se le explica la oferta.
@@ -551,16 +597,20 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     }
     // "No gracias, ya pagué": un no, aunque cuente algo más. "No gracias, chao": un no que además se despide.
     const declined = answerTo === 'no' || (answerTo === null && /^(no|nop)( gracias)?\b/.test(n) && !question);
+    // "No gracias, igual no me sirvió", "no, gracias por nada": no quiere el asesor, pero no quedó satisfecho.
+    if (declined && DISSATISFIED.test(n)) return reply(`Lamento que no te haya servido${you}. ¿Me cuentas qué necesitas y lo intento de nuevo?`);
     if (declined && FAREWELL.test(n)) return reply(vary(thanksTexts(you)), { kind: 'closing' });
     if (declined) return reply(fresh([`Está bien${you}. ¿Hay algo más en lo que te pueda ayudar?`, `De acuerdo${you}. ¿Te ayudo con algo más?`]));
-    if (answerTo === 'closing') return reply(vary(thanksTexts(you)), { kind: 'closing' });
+    // "Después te escribo", "chao": se despide; "gracias": agradece.
+    if (answerTo === 'closing') return reply(FAREWELL.test(n) && !THANKS_WORD.test(n) ? fresh(farewellTexts(you, LATER.test(n))) : vary(thanksTexts(you)), { kind: 'closing' });
     // Otra pregunta: se atiende normalmente.
   }
 
   // R4: reuniendo los datos para el asesor.
   if (collecting) {
     const moment: ChatMoment = 'collecting';
-    const cancel = cancelOf(body.message);
+    // "Ana Ruiz 43123456, mañana vuelvo": entregó datos; aplazar no suelta la solicitud.
+    const cancel = cancelOf(body.message, { hasData: progressed });
     if (cancel.cancel) {
       // "Olvídalo, ¿cuál es el correo?": se suelta la solicitud y se responde lo que preguntó (si no está publicado, se dice).
       const answer = cancel.question ? (await answerText()) ?? (await unanswered()) : null;
@@ -573,8 +623,13 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     if (userTurn.cleared.includes('name')) return collect('remind', 'Disculpa la confusión.');
     // "¿Y si no tengo cédula?", "¿sirve la tarjeta de identidad?": se explica qué documento sirve (no es negarse).
     if (asksWhichDocument(body.message) && !userTurn.captured.includes('document')) return collect('remind', WHICH_DOCUMENT);
-    // "Un momento, ya te la paso: 43123456" trajo el dato: se toma en vez de esperar.
-    if (isHold(body.message) && !progressed) return reply(fresh(['Claro, aquí te espero.', 'Tranquilo, tómate tu tiempo; aquí te espero.']), { kind: 'hold', field: 'handoff' });
+    // "Un momento, ya te la paso: 43123456" trajo el dato: se toma en vez de esperar. "Luego te paso la cédula", "mañana te
+    // escribo con los datos": se le espera.
+    if (isHold(body.message) && !progressed) {
+      return reply(fresh(POSTPONE_WHEN.test(n)
+        ? ['Claro. Cuando los tengas, escríbeme por aquí y te paso con el asesor.', 'Listo, aquí te espero; cuando los tengas, escríbeme por aquí.']
+        : ['Claro, aquí te espero.', 'Tranquilo, tómate tu tiempo; aquí te espero.']), { kind: 'hold', field: 'handoff' });
+    }
     // "No entiendo": se le explica para qué son los datos (o qué es la cartera) y se le vuelven a pedir.
     if (isConfused(body.message) && !progressed) {
       const onlyPortfolio = missing.length === 1 && missing[0] === 'portfolio';
@@ -582,16 +637,24 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
         ? 'La cartera es la empresa o marca con la que tienes tu consulta. Si no estás seguro, dímelo y el asesor la confirma contigo.'
         : 'Te los pido para que el asesor identifique tu caso y no tengas que repetirlos. Si prefieres no darlos, dímelo y te paso así.');
     }
-    const mentioned = missing.includes('portfolio') ? namedPortfolios(body.message, portfolios) : { list: [], negated: false };
+    // "Ninguna de las dos" a "¿Tu consulta es de Flamingo o de Offcorss?": niega las que el bot ofreció (no dice que su
+    // cartera no sea de la empresa).
+    const offeredNow = missing.includes('portfolio') ? offeredPortfolios(bot.lastText ?? '', portfolios).list : [];
+    const noneOffered = offeredNow.length > 0 && offeredNow.length < portfolios.length
+      && /^(?:ninguna|ninguno)(?: de (?:las|los) (?:dos|tres|2|3)| de esas| de esos| de las anteriores| de los anteriores)?$/.test(userTurn.captured.length > 0 ? userTurn.extracted.rest : n);
+    const mentioned = noneOffered ? { list: offeredNow, negated: true }
+      : missing.includes('portfolio') ? namedPortfolios(body.message, portfolios) : { list: [], negated: false };
     const named = mentioned.list;
-    // "Las dos", "ambas" (a "¿Tu consulta es de Flamingo o de Offcorss?" o tras nombrar dos): no se adivina; el asesor
-    // las revisa con él.
-    if (missing.includes('portfolio') && BOTH_RE.test(n)) {
+    // "Las dos", "ambas" (a "¿Tu consulta es de Flamingo o de Offcorss?" o tras nombrar dos, también con sus datos:
+    // "Juan Pérez 1020304050, las dos"): no se adivina; el asesor las revisa con él.
+    if (missing.includes('portfolio') && (BOTH_RE.test(n) || (userTurn.captured.length > 0 && BOTH_RE.test(userTurn.extracted.rest)))) {
       const both = 'Entendido, el asesor las revisa contigo.';
       if (missing.length === 1) return escalate(joinText(handoffAck, both), false);
       return collect('remind', both, handoffAck, { waive: ['portfolio'] });
     }
-    let refused = refusedFields(body.message);
+    let refused = noneOffered ? null : refusedFields(body.message);
+    // "Juan Pérez 1020304050, no sé": con este mensaje ya completó los datos; no es una negativa.
+    if (refused && progressed && missing.length === 0) return escalate();
     // "Flamingo u Offcorss, no estoy seguro": lo que no sabe es la cartera.
     if (refused === 'all' && named.length > 0) refused = ['portfolio'];
     // No sabe la cartera pero faltan otros datos: el asesor la confirma y se sigue con lo demás.
@@ -617,7 +680,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // Nombró carteras de la empresa pero no cuál es la suya ("Offcorss y Flamingo", "tengo deudas con Flamingo y
     // Offcorss", "no es Flamingo", "ni Flamingo ni Offcorss"): se le pregunta entre esas (o entre las demás), sin decir
     // que no las encuentra.
-    if ((named.length >= 2 || (named.length >= 1 && mentioned.negated)) && !userTurn.captured.includes('portfolio') && !question) {
+    if ((named.length >= 2 || (named.length >= 1 && mentioned.negated)) && !userTurn.captured.includes('portfolio') && (!question || noneOffered)) {
       const options = mentioned.negated ? portfolios.filter((p) => !named.some((x) => x.key === p.key)) : named;
       const others = missing.filter((f) => f !== 'portfolio');
       if (options.length > 0) {
@@ -646,7 +709,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       // No se le vuelve a pedir la cartera que acaba de decir: el asesor la confirma.
       return collect('remind', `${note}, pero no hay problema: el asesor la confirma contigo.`, handoffAck, { waive: ['portfolio'] });
     }
-    if (pureData) return collect('continue');
+    if (dataOnly) return collect('continue');
     // "Sí", "claro", "dale": va a darlos.
     if (plainYes) return collect('continue', 'Perfecto.');
     // "Gracias", "ok": se le recuerda con amabilidad, sin contarlo como un pedido más.
@@ -657,8 +720,9 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       ]), { kind: 'hold', field: 'handoff' });
     }
     if (intent === 'other') {
-      // No es una pregunta ("jajaja", "busco la cédula"): solo se recuerda lo que falta (si trajo un dato, se agradece).
-      if (!question) return collect(progressed ? 'continue' : 'remind');
+      // No es una pregunta ("jajaja", "busco la cédula"): solo se recuerda lo que falta (si trajo un dato, se agradece). Si
+      // cuenta algo de su caso ("la cuota está mal, es de 250000"), se le dice que se entendió.
+      if (!question) return collect(progressed ? 'continue' : 'remind', mentionsCase(n) ? 'Entiendo.' : '');
       // Preguntó otra cosa mientras faltan datos: se le responde y se le recuerda lo que falta.
       const r = await ask();
       if (r.type === 'answer' && r.reason === 'clarify') return reply(joinText(handoffAck, r.message), { kind: 'clarify', field: 'handoff' });
@@ -679,6 +743,11 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const startNamed = missing.includes('portfolio') ? namedPortfolios(body.message, portfolios) : { list: [], negated: false };
   const startOptions = !startNamed.negated && startNamed.list.length >= 2 && startNamed.list.length < portfolios.length
     ? startNamed.list.map((p) => p.name) : undefined;
+  // "¿Eres humano? Quiero pagar mi deuda": se presenta y, como trae su caso, empieza la toma de datos.
+  const identityCase = intent === 'identity' && body.message.split(/[?¿.!]+/).some((p) => !!p.trim() && isSensitive(normalize(p)));
+  if (identityCase) {
+    return collect('start', joinText(identityText(company, 'collecting'), 'Para revisar tu caso te comunico con un asesor.', notes), '', { options: startOptions });
+  }
   if (intent === 'human') {
     // "Quiero un asesor, pero primero dime el correo": se responde y se sigue con los datos. Si no está publicado, se
     // dice ("El horario no aparece publicado…"), en vez de ignorar la pregunta.
@@ -688,10 +757,14 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     const pending = extra && !waitAsk && !answer ? await unanswered({ advisorOk: true }) : '';
     // Con los datos completos, la respuesta va como mensaje del bot y el aviso de la cola aparte.
     if (answer && missing.length === 0) return answerThenQueue(withoutTrailingQuestion(answer));
+    // "El asesor me colgó, quiero hablar con otro", "la asesora fue grosera, quiero otro asesor": primero la disculpa.
+    const another = /\botr[oa] (asesor|asesora|agente|persona)\b|\bcon otr[oa]\b/.test(n) ? 'otro' : 'un';
+    const sorry = isComplaint(body.message) ? `Lamento el inconveniente${you}.` : '';
     const opening = answer ? joinText(withoutTrailingQuestion(answer), 'Te comunico con un asesor.')
       : pending ? joinText(pending, NAMES_ADVISOR.test(pending) ? 'Te comunico con uno.' : 'Te comunico con un asesor, que te lo confirma.')
         : waitAsk ? `¡Claro${you}! Te comunico con un asesor; te escribirá por este mismo chat apenas esté disponible.`
-          : `¡Claro${you}! Te comunico con un asesor.`;
+          : sorry ? joinText(sorry, `Te comunico con ${another} asesor.`)
+            : `¡Claro${you}! Te comunico con ${another} asesor.`;
     return collect('start', joinText(opening, notes), '', { options: startOptions });
   }
   if (intent === 'sensitive') {
@@ -711,8 +784,11 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     ? ack.replace(`Mucho gusto, ${first}.`, 'Mucho gusto.').replace(`Gracias, ${first}, `, 'Gracias, ').replace(`Gracias, ${first}.`, 'Gracias.').replace(`Listo, ${first}, `, 'Listo, ')
     : ack;
   const opener = joinText(hello, ackAfterHello);
-  /** Si el bot ya saluda o se presenta, la respuesta del modelo va sin su propio saludo (no "¡Hola! ¡Hola! …"). */
-  const withOpener = (text: string) => joinText(opener, opener ? withoutGreeting(text, conv.visitor_name) : text);
+  /**
+   * Si el bot ya saluda o se presenta, la respuesta del modelo va sin su propio saludo (no "¡Hola! ¡Hola! …") ni las
+   * cortesías que repetirían la del bot ("¡Hola, Julián! Mucho gusto. Mucho gusto. …", "… ¿Qué tal, Hernán? …").
+   */
+  const withOpener = (text: string) => joinText(opener, opener ? withoutCourtesy(withoutGreeting(text, conv.visitor_name), conv.visitor_name) : text);
   /** El nombre se pregunta una sola vez, al final de una respuesta que no termina en pregunta. */
   const answer = (text: string, link?: ChatReply['link']) => {
     if (!conv.visitor_name && !bot.nameAsked && !endsWithQuestion(text) && text.length <= 320) {
@@ -774,18 +850,22 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       : [tidy(`¡Hola! ${how}Soy el asistente virtual de ${companyName(company)}. ¿En qué puedo ayudarte?`), `¡Hola! ${how}¿En qué te puedo ayudar?`]));
   }
   if (intent === 'thanks') {
-    if (farewell && !THANKS_WORD.test(n)) return reply(fresh([`¡Hasta pronto${you}! Aquí estaré si necesitas algo más.`, `¡Que te vaya bien${you}! Si te surge otra duda, escríbeme.`]), { kind: 'closing' });
+    if (farewell && !THANKS_WORD.test(n)) return reply(fresh(farewellTexts(you, LATER.test(n))), { kind: 'closing' });
     return reply(vary(thanksTexts(you)), { kind: 'closing' });
   }
   // "Quiero preguntar algo", "tengo otra pregunta": se le invita a preguntar.
-  if (announcesQuestion(body.message)) return reply(fresh([joinText(opener, '¡Claro! Dime, ¿qué quieres preguntar?'), joinText(opener, 'Claro, cuéntame. ¿Qué necesitas saber?')]));
+  if (announcesQuestion(body.message)) {
+    return reply(fresh([joinText(opener, opener ? 'Claro, dime: ¿qué quieres preguntar?' : '¡Claro! Dime, ¿qué quieres preguntar?'), joinText(opener, 'Claro, cuéntame. ¿Qué necesitas saber?')]));
+  }
   // "No entiendo", "¿cómo así?": se ofrece explicar mejor.
   if (isConfused(body.message)) {
     return reply(fresh(['Disculpa si no fui claro. ¿Qué parte quieres que te explique mejor?', 'Perdona, me expliqué mal. ¿Qué te gustaría que te aclare?']));
   }
   if (intent === 'help') return reply(vary(helpTexts().map((t) => joinText(ack, t))));
+  // Tras la oferta dijo "no me llamo Pedro" y ahora su nombre: la oferta sigue en pie.
+  if (bot.offerPending && userTurn.captured.includes('name') && dataOnly) return reply(offerAdvisor(ack), { kind: 'offer' });
   // Dio un dato sin que se lo pidieran o respondió "¿con quién tengo el gusto?": se agradece sin pedir más.
-  if (pureData) {
+  if (dataOnly) {
     if (greeted && userTurn.captured.includes('name') && userTurn.replaced.length === 0) {
       // "Hola, ¿cómo estás? Soy Luisa", "hola, ¿cómo estás? Luisa": se le devuelve el saludo.
       const asksHow = howAreYou || /\b(como (estas|esta|vas|va|te va|le va|amaneciste|amanecio)|que tal|que mas)\b/.test(n);
@@ -826,8 +906,9 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   // Una queja ("el asesor no me ha contestado", "la línea no contesta"): se lamenta y se ofrece un asesor, aunque traiga
   // una pregunta ("el asesor no me ha escrito, ¿qué pasó?").
   if (isComplaint(body.message) && (r.reason === 'unavailable' || r.reason === 'not_found')) {
-    // Primero la disculpa; lo que anotó del mensaje va después ("…Ya anoté la cartera Flamingo. ¿Quieres…?").
-    const named = userTurn.captured.includes('name') && first ? `, ${first}` : '';
+    // Primero la disculpa; lo que anotó del mensaje va después ("…Ya anoté la cartera Flamingo. ¿Quieres…?"). Si el saludo
+    // ya dice el nombre ("¡Hola, Ana!"), la disculpa no lo repite.
+    const named = userTurn.captured.includes('name') && first && !hello ? `, ${first}` : '';
     const noted = dataNotes(userTurn, portfolioName);
     return reply(fresh(complaintLeads(named).map((l) => joinText(hello, offerAdvisor(joinText(l, noted))))), { kind: 'offer' });
   }

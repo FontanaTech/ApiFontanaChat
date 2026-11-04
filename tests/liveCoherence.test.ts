@@ -471,9 +471,9 @@ describe('coherencia del chat en vivo', () => {
     expect(calls.conversation.status).toBe('BOT_ACTIVO');
 
     const c = await publicClient(env, 'coherencia', ORIGIN);
-    for (const m of ['quiero otro asesor', 'quiero hablar con el gerente']) {
+    for (const [m, who] of [['quiero otro asesor', 'otro'], ['quiero hablar con el gerente', 'un']]) {
       const [r] = await talk(await publicClient(env, 'coherencia', ORIGIN), m);
-      expect(r.message, m).toMatch(/^¡Claro! Te comunico con un asesor\./);
+      expect(r.message, m).toMatch(new RegExp(`^¡Claro! Te comunico con ${who} asesor\\.`));
     }
     const [phone] = await talk(c, '¿cuál es el teléfono para hablar con un asesor?');
     expect(phone.message).toBe('Línea de atención: 604 607 4101. Si prefieres, también te comunico por aquí con un asesor. ¿Quieres?');

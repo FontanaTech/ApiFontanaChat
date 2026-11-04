@@ -14,7 +14,9 @@
  * Todo va normalizado: minúsculas y sin tildes (la ñ se escribe como n, igual que en normalize()).
  *
  * El léxico amplio (miles de palabras comunes, marcas, nombres y apellidos que también son palabras) está en
- * lexiconWords.ts y se suma a estas listas.
+ * lexiconWords.ts y se suma a estas listas. Las demás palabras del idioma ("burro", "actriz", "parálisis") las reconoce
+ * el diccionario de spanishWords.ts: por eso un nombre de pila que también es palabra ("Esperanza", "Linda", "Azucena")
+ * debe estar en FIRST_NAMES, y un apellido que también es palabra ("Mora", "Cadena"), en SURNAMES.
  */
 import { GENERAL_WORDS, MORE_BRANDS, MORE_FIRST_NAMES, MORE_SURNAMES, MORE_WORD_NAMES } from './lexiconWords';
 
@@ -186,7 +188,9 @@ const EXTRA_COMMON = words(`
   putas perra perras zorra zorras bobo boba bobos tonto tonta tontos idiota idiotas imbecil imbeciles sapo sapa sapos
   rata ratas careverga carechimba verga vergas mamon mamona lambon lambona lambones sinverguenza sinverguenzas ome
   ratero ratera bruto bruta cerdo cerda culo culicagado malparida cabron cabrona cretino cretina asqueroso asquerosa
-  loca loco locos tarado tarada mongolico baboso babosa cansona cansones metiche
+  loca loco locos tarado tarada mongolico baboso babosa cansona cansones metiche gamin gamina gamines mamerto mamerta
+  raspachin raspachines guache guaches nea neas niche nero nera chirrete chirretes desechable lambeculo sapolambon
+  bobolon mocoso mocosa culicagada malparido gonorreita marica maricas
   princesa princeso reinita cielito negrita negrito belleza oro
   cristiana cristiano cristianos creyente catolica catolico evangelica evangelico adventista honesta honesto sincero
   sincera franca fiel monja monje misionero misionera minero minera rector rectora labradora labrador leal
@@ -229,6 +233,23 @@ export const COMMON = new Set([...EVERYDAY, ...BRANDS]);
  */
 const ENCLITIC = /^[a-z]{3,}[aei](me|te|nos|selo|sela|selos|melo|mela|telo|tela)$/;
 export const isEnclitic = (w: string) => w.length >= 5 && ENCLITIC.test(w);
+
+/**
+ * Nombres de pila que también son palabras del diccionario (spanishWords.ts) pero no de uso diario en el chat: sin estar
+ * aquí, solos ("Amapola", "Dimas") no se tomarían como nombre.
+ */
+const WORDLIKE_FIRST_NAMES = `
+  adelfa adelino adoracion agata alana albina alejandrino alexia alfonsina ali amando amapola amaranto amarilis amaro ambrosia
+  amina amir anatolia angelines angustias antero anunciacion apolo aquilina aquilino arcadia aristarco arles asunta atanasia
+  augusta aurea aureo azalea bartola basilia begonia benedicta benigna benita bernardina buenaventura carina carlina carlo
+  carmelina casimira celinda cesareo clementina consolacion cora crisanta custodio dacio damiana delfin diamela dimas dionisia
+  eligio emerito eneas escolastica escolastico eufrasia evangelista facunda fausta federica felicita felicitas filadelfo flora
+  florentina floro fructuosa fructuoso gabina galilea galo gardenia germana herculano hilaria inocencia isidra jan jeronima
+  jordan lauro lazara lea leda leopoldina liana librada lujan macaria macedonio manases manolo marcia marcial marciana marciano
+  marcio maruja maura melina melva nacianceno nadir nectario nicol nimia ninfa octaviano oriol orquidea pascasio patrocinio
+  perpetua petra placida primitiva querubin rayen regulo reyes romeo rufo sacramento sagrario salma salvadora samara sanson
+  saturnina silvano tamara tecla tertulio tirso veneranda visitacion zoilo
+  segundo maximo maxima pura vera maya felicidad fe genesis justa divina digna gala miranda trino urbano`;
 
 /** Nombres de pila frecuentes en Colombia y Latinoamérica. */
 export const FIRST_NAMES = new Set(words(`
@@ -280,7 +301,8 @@ export const FIRST_NAMES = new Set(words(`
   karelys karelis mileidis mileydis luzmeris darlis yurleidis nelis yeinis mairis glenis yoleidis yamiles ingris leida
   leyda zaida onelis yulis yarelis yudis yudith eudis edilsa dalgis dilsa nayelis yeimis kendris kelys yuris yurlis
   darlys yoiner yohanis dary dari darly maryuris neyla nely yaneris yenis dalys dayris yamith everth idalia idaly zully
-  yaditza yordi pastor reina rey
+  yaditza yordi pastor reina rey linda bella
+  ${WORDLIKE_FIRST_NAMES}
   ${MORE_FIRST_NAMES}
 `));
 
@@ -315,7 +337,7 @@ export const SURNAMES = new Set(words(`
   velandia velasco velasquez velez vera vergara vidal villa villada villalba villamil villamizar villarreal villegas
   villota yanez yara yepes zabala zambrano zamora zapata zarate zea zuluaga hoz armas pascual
   calle corona caldas sucre santander giron cartagena buenaventura narino medellin toledo sevilla castilla barbosa
-  villavicencio
+  villavicencio aleman
   ${MORE_SURNAMES}
 `));
 
@@ -326,7 +348,8 @@ export const SURNAMES = new Set(words(`
 export const WORD_NAMES = new Set(words(`
   alba amparo angel aurora belen caridad cielo clara concepcion consuelo cruz dolores domingo dulce esperanza estrella
   flor fe gloria iris leo leon luz mar mercedes milagros nieves paz perla piedad pilar remedios rocio rosa rosario
-  salvador simon socorro sol soledad trinidad victoria franco gentil nel ever modesto justo
+  salvador simon socorro sol soledad trinidad victoria franco gentil nel ever modesto justo linda bella
+  segundo maximo maxima pura vera maya felicidad fe genesis justa divina digna gala miranda trino urbano flora lea
   ${MORE_WORD_NAMES}
 `));
 
