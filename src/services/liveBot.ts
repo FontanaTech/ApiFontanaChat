@@ -9,7 +9,7 @@ import {
 } from './chat';
 import {
   acceptsOffer, afterYes, analyze, announcesQuestion, asksWhichDocument, cancelOf, COMMERCIAL_RE, HUMAN_NEGATED, isConfused, isHold, isSensitive,
-  isWaitQuestion, isWhyData, looksLikeQuestion, mentionsCase, negatesAdvisorOnly, POSTPONE_WHEN, refusedFields, refuseQuestion, yesNo,
+  isWaitQuestion, isWhyData, looksLikeQuestion, mentionsCase, negatesAdvisorOnly, POSTPONE_WHEN, refusedFields, refuseQuestion, withoutQuestionTag, yesNo,
 } from './intents';
 import type { LiveNotify } from './liveEvents';
 import {
@@ -308,7 +308,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const intent = refersAdvisor ? 'human' : analysis.intent;
   const answerTo = yesNo(body.message);
   /** Dijo que no quiere un asesor ("no necesito asesor, ¿trabajan los sábados?"): no se le ofrece uno. */
-  const negated = HUMAN_NEGATED.test(n);
+  const negated = HUMAN_NEGATED.test(normalize(withoutQuestionTag(body.message)));
   const pureData = onlyData(userTurn.extracted);
   /** El mensaje solo dejaba un número de contacto ("mi wsp 3104567890"). */
   const phoneOnly = pureData && !!userTurn.extracted.phone && userTurn.captured.length === 0;
@@ -446,8 +446,20 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       ]));
     }
     if (isWaitQuestion(body.message) || intent === 'human') return reply(fresh(WAITING.map((w) => joinText(ack, w))));
+    // "Sí" a "¿Es de General o Claro?": no dice cuál; se le pide que precise (o el asesor lo confirma).
+    const askedPortfolios = offeredPortfolios(bot.lastText ?? '', portfolios).list;
+    if (plainYes && askedPortfolios.length >= 2) {
+      return reply(`¿De cuál de ellas: ${orList(askedPortfolios.map((p) => p.name))}? Si no estás seguro, el asesor lo confirma contigo.`);
+    }
     if (plainYes && answering) return reply(fresh(['¡Claro! ¿En qué te ayudo mientras tanto?', 'Cuéntame, ¿qué necesitas saber?']));
     if (plainYes) return reply(fresh([`¡Listo${you}! El asesor te escribirá por aquí en cuanto esté disponible.`, `Perfecto${you}. El asesor continuará contigo por este chat.`]));
+    // "Después te escribo", "mañana vuelvo": no agradece nada; sigue en la fila.
+    if (LATER.test(n) && !question) {
+      return reply(fresh([
+        joinText(ack, `Está bien${you2}. Tu solicitud sigue en la fila y el asesor te escribirá por este mismo chat.`),
+        joinText(ack, `Listo${you2}, cuando vuelvas el asesor podrá continuar contigo por este mismo chat.`),
+      ]));
+    }
     if (intent === 'thanks' || answerTo === 'closing' || answerTo === 'no') {
       return reply(fresh([
         joinText(ack, `¡Con gusto${you2}! El asesor continuará contigo por este chat en cuanto esté disponible.`),
@@ -585,7 +597,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
         'Me refiero a que un asesor puede continuar contigo por este mismo chat. ¿Te comunico con uno?',
       ]), { kind: 'offer' });
     }
-    if (answerTo === 'yes' || intent === 'human') {
+    // "Sí, no hay problema", "sí, pero no tengo la cédula a la mano": también aceptan.
+    if (answerTo === 'yes' || intent === 'human' || (answerTo === null && !question && acceptsOffer(body.message))) {
       // "Sí, pero antes dime dónde quedan": se responde y se sigue con los datos (con los datos completos, la respuesta
       // va como mensaje del bot y el aviso de la cola aparte).
       if (answerTo === 'yes' && !plainYes && intent !== 'human') {
@@ -647,12 +660,16 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     const named = mentioned.list;
     // "Las dos", "ambas" (a "¿Tu consulta es de Flamingo o de Offcorss?" o tras nombrar dos, también con sus datos:
     // "Juan Pérez 1020304050, las dos"): no se adivina; el asesor las revisa con él.
-    if (missing.includes('portfolio') && (BOTH_RE.test(n) || (userTurn.captured.length > 0 && BOTH_RE.test(userTurn.extracted.rest)))) {
+    if (missing.includes('portfolio') && (BOTH_RE.test(n)
+      || (userTurn.captured.length > 0 && (BOTH_RE.test(userTurn.extracted.rest) || BOTH_RE.test(userTurn.extracted.said ?? ''))))) {
       const both = 'Entendido, el asesor las revisa contigo.';
       if (missing.length === 1) return escalate(joinText(handoffAck, both), false);
       return collect('remind', both, handoffAck, { waive: ['portfolio'] });
     }
     let refused = noneOffered ? null : refusedFields(body.message);
+    // "No sé si es de Claro o de Flamingo", "no recuerdo si es Claro": no sabe la cartera (el asesor la confirma).
+    if (!refused && missing.includes('portfolio') && named.length > 0 && !userTurn.captured.includes('portfolio')
+      && /^(?:no se|no lo se|no recuerdo|no me acuerdo|no estoy segur[oa]|ni idea)(?: bien)? si\b/.test(n)) refused = ['portfolio'];
     // "Juan Pérez 1020304050, no sé": con este mensaje ya completó los datos; no es una negativa.
     if (refused && progressed && missing.length === 0) return escalate();
     // "Flamingo u Offcorss, no estoy seguro": lo que no sabe es la cartera.
@@ -758,8 +775,9 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // Con los datos completos, la respuesta va como mensaje del bot y el aviso de la cola aparte.
     if (answer && missing.length === 0) return answerThenQueue(withoutTrailingQuestion(answer));
     // "El asesor me colgó, quiero hablar con otro", "la asesora fue grosera, quiero otro asesor": primero la disculpa.
-    const another = /\botr[oa] (asesor|asesora|agente|persona)\b|\bcon otr[oa]\b/.test(n) ? 'otro' : 'un';
-    const sorry = isComplaint(body.message) ? `Lamento el inconveniente${you}.` : '';
+    const another = /\botr[oa] (asesor|asesora|agente|persona)\b|\b(con|atienda|atiendan|por) otr[oa]\b/.test(n) ? 'otro' : 'un';
+    // "Otro asesor por favor, el anterior no me ayudó": también se disculpa.
+    const sorry = isComplaint(body.message) || DISSATISFIED.test(n) ? `Lamento el inconveniente${you}.` : '';
     const opening = answer ? joinText(withoutTrailingQuestion(answer), 'Te comunico con un asesor.')
       : pending ? joinText(pending, NAMES_ADVISOR.test(pending) ? 'Te comunico con uno.' : 'Te comunico con un asesor, que te lo confirma.')
         : waitAsk ? `¡Claro${you}! Te comunico con un asesor; te escribirá por este mismo chat apenas esté disponible.`
@@ -818,6 +836,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     if (plainYes && /^(si|sii+|sip|sisas|claro|por supuesto|obvio)\b/.test(rest || n)) {
       return reply(fresh(['¡Claro! Cuéntame, ¿en qué te puedo ayudar?', '¡Listo! ¿Qué necesitas saber?']));
     }
+    // "Después te escribo": se despide sin agradecer lo que no le dijeron.
+    if ((answerTo === 'no' || answerTo === 'closing') && LATER.test(n) && !THANKS_WORD.test(n)) return reply(fresh(farewellTexts(you, true)), { kind: 'closing' });
     if (answerTo === 'no' || answerTo === 'closing') return reply(vary(thanksTexts(you)), { kind: 'closing' });
   }
   // "No quiero asesor, gracias": se respeta sin ofrecer uno.
@@ -862,8 +882,14 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     return reply(fresh(['Disculpa si no fui claro. ¿Qué parte quieres que te explique mejor?', 'Perdona, me expliqué mal. ¿Qué te gustaría que te aclare?']));
   }
   if (intent === 'help') return reply(vary(helpTexts().map((t) => joinText(ack, t))));
-  // Tras la oferta dijo "no me llamo Pedro" y ahora su nombre: la oferta sigue en pie.
-  if (bot.offerPending && userTurn.captured.includes('name') && dataOnly) return reply(offerAdvisor(ack), { kind: 'offer' });
+  // Tras la oferta dijo "no me llamo Pedro" y ahora su nombre: la oferta sigue en pie. Si además la acepta ("me llamo Juan y
+  // sí quiero", "Juan, sí") o da el documento, se le pasa con el asesor.
+  if (bot.offerPending && userTurn.captured.includes('name') && dataOnly) {
+    if (acceptsOffer(body.message) || userTurn.captured.includes('document')) {
+      return collect('start', joinText(`¡Listo${you}! Te comunico con un asesor.`, missing.length > 0 ? dataNotes(userTurn, portfolioName) : ''), '');
+    }
+    return reply(offerAdvisor(ack), { kind: 'offer' });
+  }
   // Dio un dato sin que se lo pidieran o respondió "¿con quién tengo el gusto?": se agradece sin pedir más.
   if (dataOnly) {
     if (greeted && userTurn.captured.includes('name') && userTurn.replaced.length === 0) {

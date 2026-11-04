@@ -191,6 +191,8 @@ const EXTRA_COMMON = words(`
   loca loco locos tarado tarada mongolico baboso babosa cansona cansones metiche gamin gamina gamines mamerto mamerta
   raspachin raspachines guache guaches nea neas niche nero nera chirrete chirretes desechable lambeculo sapolambon
   bobolon mocoso mocosa culicagada malparido gonorreita marica maricas
+  hijuemadre juemadre careculo gueva marik mka nojoda pichurria kiubo qhubo okk bai dotora garbimba jpta gomelo gomela
+  chirri abudinero jp bombom graxis amigis gordis listis besis bebis cunis chaois nois ufis holis
   princesa princeso reinita cielito negrita negrito belleza oro
   cristiana cristiano cristianos creyente catolica catolico evangelica evangelico adventista honesta honesto sincero
   sincera franca fiel monja monje misionero misionera minero minera rector rectora labradora labrador leal
@@ -204,7 +206,7 @@ const EXTRA_COMMON = words(`
  */
 export const DESCRIPTIVE_NAMES = new Set(words(`
   clara claro dulce franco franca gentil modesto modesta justo justa amada amado benigno benigna bienvenido bienvenida
-  candida candido placido placida primitivo prospero serena sereno severo severa marino pastor pastora reina rey
+  candida candido placido placida primitivo prospero serena sereno severo severa marino pastor pastora reina rey bautista blanca morena azul
 `));
 
 /**
@@ -249,7 +251,9 @@ const WORDLIKE_FIRST_NAMES = `
   marcio maruja maura melina melva nacianceno nadir nectario nicol nimia ninfa octaviano oriol orquidea pascasio patrocinio
   perpetua petra placida primitiva querubin rayen regulo reyes romeo rufo sacramento sagrario salma salvadora samara sanson
   saturnina silvano tamara tecla tertulio tirso veneranda visitacion zoilo
-  segundo maximo maxima pura vera maya felicidad fe genesis justa divina digna gala miranda trino urbano`;
+  segundo maximo maxima pura vera maya felicidad fe genesis justa divina digna gala miranda trino urbano
+  junior nina gracia cayo custodia lisa casto gil pio mia amos patria delicia canela fina miel cristo vital santo
+  marte nuno mane anatolio misericordia constancia providencia generosa oliva pacifico resurreccion azul morena`;
 
 /** Nombres de pila frecuentes en Colombia y Latinoamérica. */
 export const FIRST_NAMES = new Set(words(`
@@ -338,6 +342,24 @@ export const SURNAMES = new Set(words(`
   villota yanez yara yepes zabala zambrano zamora zapata zarate zea zuluaga hoz armas pascual
   calle corona caldas sucre santander giron cartagena buenaventura narino medellin toledo sevilla castilla barbosa
   villavicencio aleman
+  abarca aceituno adame agredo aguado aguayo aguero aguila alamo alas albornoz alcalde alcantara alferez aliaga
+  allende amorocho arena arenal babilonia ballesta banos barba barbero barquero barranca barranco barriga barron
+  batista becerril bermejo bitar borrego botella brenes buendia cabal cabanas cabello cabrero caldera calleja calzada
+  camara campana canales canelo cantero canto cantos capilla capote carbonero carcamo cardales cardenal carrera
+  carretero carrizo casal casillas castellano catalan cazares ceja cerda cerezo choque chura cid claros cofre cogollo
+  collado colmenero colombo colon cornejo corral cortina cota crespo cueto cueva donoso encina encinas escalera
+  escribano eslava espada esparza espejo espina espino fallas faria farias feria fontana fragoso fraile fresneda
+  fresno frutos gallegos garro garza gavilan granado granda greco grillo guardado guardia guardo guijarro guillen
+  halcon hermoso hormaza huerta iglesia jaen jara jerez junco junquera lacayo laguna lamas lanza lastra lazo lechuga
+  libreros limon lira llamas lobato lobos lomas lombardo longo loor loza luengo maceo madera maduro manco manso
+  manzanares mares marmol marte mata matamoros matos melara mella mellado mera mercader montilla monzon moraga moral
+  moran morera moro mota mozo muro nava noble nogales obispo oliva olivas olivera olmo olmos orbe orellana osuna
+  padron pajares pajon palomares palomo pareja parrado pascuas pavon payan pazos pedregal peinado penas peral
+  peregrino picado piedra pina pinar planas platero pliego poma portales portillo potes pozo prados puente puertas
+  puga pupo quijada quinteros raposo real rebollo recio regalado retamal ribas ribeiro ribera riera rojo romano romo
+  rosado ruano ruge sacristan salgar salguero sandino sastre selva serra serrato sobrino socarras suero tejedor tejero
+  terrazas tinajero toledano torre torrente toscano trigo valiente vaquero varas varona vento verdugo vial vicario
+  vieira zamorano zapatero zarco zarza zayas zurita conejo vina
   ${MORE_SURNAMES}
 `));
 
@@ -350,6 +372,8 @@ export const WORD_NAMES = new Set(words(`
   flor fe gloria iris leo leon luz mar mercedes milagros nieves paz perla piedad pilar remedios rocio rosa rosario
   salvador simon socorro sol soledad trinidad victoria franco gentil nel ever modesto justo linda bella
   segundo maximo maxima pura vera maya felicidad fe genesis justa divina digna gala miranda trino urbano flora lea
+  junior nina gracia cayo custodia lisa casto gil pio mia patria delicia canela fina miel cristo vital santo marte
+  constancia providencia generosa oliva pacifico azul morena
   ${MORE_WORD_NAMES}
 `));
 

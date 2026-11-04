@@ -1310,6 +1310,32 @@ describe('revisión 7 (verificación nov. 2026): diccionario, apodos, correccion
     expect(analyze('después te escribo').intent).toBe('thanks');
   });
 
+  it('verificación 7: nombres en -is, nombres que son palabras, montos, negativas y coletillas', () => {
+    expect(handoff('Marlenis Pérez 1020304050')).toBe('Marlenis Pérez');
+    expect(handoff('Yesenis Palacios 43123456')).toBe('Yesenis Palacios');
+    expect(asked('Yuledis')).toBe('Yuledis');
+    expect(asked('graxis')).toBeUndefined();
+    for (const [m, name] of [['me llamo Lisa', 'Lisa'], ['Junior Pérez 1020304050', 'Junior Pérez'], ['Pío Martínez 1020304050', 'Pío Martínez'], ['Ana Madera', 'Ana Madera']]) {
+      expect(handoff(m), m).toBe(name);
+    }
+    for (const m of ['Mía', 'Amapola', 'Hola, ¿cómo estás? Luisa']) expect(extractVisitorData(m, [], { asked: m.startsWith('Hola') ? null : 'name' }).name, m).toBeTruthy();
+    expect(handoff('me llamo burro')).toBeUndefined();
+    expect(extractVisitorData('Carlos Ruiz 1020304050', [], { asked: 'handoff', missing: ['document'], savedName: 'Carlos' }).name).toBe('Carlos Ruiz');
+    const doc = (m: string) => extractVisitorData(m, [], { asked: 'handoff', missing: ['name'] }).document;
+    expect(doc('perdón, debe ser 1020304051')).toBe('1020304051');
+    expect(doc('me equivoqué, es 1020304051, es para pagar la deuda')).toBe('1020304051');
+    expect(doc('la cuota está mal, es de 250000')).toBeUndefined();
+    expect(cancelOf('¿y el asesor no? por favor', { waiting: true }).cancel).toBe(false);
+    expect(cancelOf('me pasas con un asesor, ¿no?, por favor').cancel).toBe(false);
+    expect(isHold('no te doy mi cédula')).toBe(false);
+    expect(isRefuse('no te paso mis datos')).toBe(true);
+    expect(isRefuse('no le importa a nadie mi caso')).toBe(false);
+    expect(isWaitQuestion('¿todavía no me atendieron?')).toBe(true);
+    expect(analyze('¿pueden pasarme con otro número?').intent).not.toBe('human');
+    expect(analyze('el asesor fue grosero, quiero que me atienda otro').intent).toBe('human');
+    expect(acceptsOffer('sí, no hay problema')).toBe(true);
+  });
+
   it('el asunto pierde el nombre en cualquier posición y no toma una ciudad por empresa', () => {
     expect(subjectText('tengo una deuda con ustedes, Ana Ruiz 43567890', { name: 'Ana Ruiz', document: '43567890' })).toBe('tengo una deuda con ustedes');
     expect(subjectText('buenas tardes, yo soy Ana Gómez y necesito un paz y salvo, cc 43123456', { name: 'Ana Gómez', document: '43123456' })).toBe('necesito un paz y salvo');

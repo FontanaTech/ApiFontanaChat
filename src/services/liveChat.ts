@@ -4,7 +4,7 @@ import type { PublicSession } from '../models/public';
 import type { Db, Queryable } from '../db';
 import { conflict, forbidden, notFound } from '../utils/errors';
 import { normalize } from '../utils/text';
-import { ADVISOR_NEGATED, analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isWaitQuestion, isWhyData, mentionsCase, topicText, yesNo } from './intents';
+import { ADVISOR_NEGATED, analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isSensitive, isWaitQuestion, isWhyData, mentionsCase, topicText, withoutQuestionTag, yesNo } from './intents';
 import { FIRST_NAMES, PLACES } from './lexicon';
 import { deniedName, extractVisitorData, namedPortfolios, offeredPortfolios, type CaptureContext, type DataField, type Extracted } from './visitorData';
 
@@ -255,10 +255,11 @@ export async function startUserTurn(
     const looseOk = x.nameExplicit || !(isCancel(message, { hasData: !!x.document || !!x.name }) || isWhyData(message));
     if (!looseOk) x.name = undefined;
     const fullName = !!x.name && x.name.trim().split(/\s+/).length >= 2;
-    // "Carlos" guardado y ahora "Carlos Ruiz": completa el nombre (no lo corrige).
+    // "Carlos" guardado y ahora "Carlos Ruiz" (o "perdón, me llamo Juan Pablo"): completa el nombre; se acusa como un
+    // cambio ("Listo, Carlos, corregí tu nombre."), no con el mismo saludo de antes.
     const completes = !!x.name && !!name && normalize(x.name).startsWith(`${normalize(name)} `);
     if (x.name && (!name || completes || (x.nameExplicit && normalize(x.name) !== normalize(name)) || (nameLoose && fullName && normalize(x.name) !== normalize(name)))) {
-      take('name', name && !nameLoose && !completes ? name : null);
+      take('name', name && !nameLoose ? name : null);
       name = x.name;
     } else if (!x.name && name) {
       // "No me llamo Pedro" con "Pedro" guardado: se borra y el bot lo vuelve a pedir.
@@ -300,8 +301,12 @@ export async function startUserTurn(
     const nm = normalize(message);
     const hadData = !!(x.document || x.name || x.portfolioKey || x.phone);
     // "No quiero que me llamen más, ¿cuánto debo?": la negativa no es el tema, lo demás sí.
-    const negated = HUMAN_NEGATED.test(nm);
-    const base = negated ? topicText(message) : hadData ? x.rest : rest;
+    const negated = HUMAN_NEGATED.test(normalize(withoutQuestionTag(message)));
+    // "¿Eres humano? Quiero pagar mi deuda": la pregunta de quién atiende no es el tema; el caso que cuenta sí.
+    const casePart = intent === 'identity'
+      ? message.split(/(?<=[?¿.!])\s*/).map((p) => p.replace(/^[¿¡\s]+/, '').trim()).find((p) => !!p && isSensitive(normalize(p))) ?? null
+      : null;
+    const base = casePart ? normalize(casePart) : negated ? topicText(message) : hadData ? x.rest : rest;
     // "Quiero hablar con un asesor" o "páseme con el gerente" no son un tema; "quiero hablar con un asesor sobre mi deuda" sí.
     const topic = intent === 'human' || REFERS_ONE.test(nm) ? base.replace(HUMAN_FILLER, ' ') : base;
     // Responder a la toma de datos con algo corto ("es de Falabella", "Bancolombia") no es el tema de la consulta.
@@ -315,11 +320,11 @@ export async function startUserTurn(
     const deniesName = cleared.includes('name')
       || (!!denied && ((!!current.visitor_name && normalize(current.visitor_name).split(' ')[0] === denied.split(' ')[0]) || (!mentionsCase(nm) && nm.split(' ').length <= 8)));
     const topical = topic.split(' ').filter((w) => w.length >= 3).length >= 2 && rest.length > 0 && !dataReply && !collectingReply
-      && (withBot ? ['other', 'sensitive', 'human'].includes(intent) : intent === 'sensitive')
+      && (withBot ? ['other', 'sensitive', 'human'].includes(intent) || !!casePart : intent === 'sensitive')
       && !isCancel(message) && !isRefuse(message) && !isHold(message) && !isWaitQuestion(message) && !isWhyData(message) && yesNo(message) === null
       && !(x.correction && hadData) && !deniesName;
     // "No me pases con ningún asesor, solo dime el correo": el tema es lo que pide, sin la negativa.
-    let subject = !current.subject && topical ? subjectText(negated ? withoutAdvisorRefusal(message) : message, x).slice(0, 300) : current.subject;
+    let subject = !current.subject && topical ? subjectText(casePart ?? (negated ? withoutAdvisorRefusal(message) : message), x).slice(0, 300) : current.subject;
     // "Necesito un paz y salvo, Juan Pérez" dicho antes de que se reconociera su nombre: al guardarlo, sale del asunto.
     if (current.subject && subject === current.subject && (captured.includes('name') || captured.includes('document'))) {
       const cleaned = subjectText(current.subject, { name: name ?? undefined, document: document ?? undefined });
@@ -393,7 +398,7 @@ export function subjectText(message: string, x: Pick<Extracted, 'document' | 'na
     // "de Bancolombia, queremos cotizar…" (quedó de "soy Laura de Bancolombia"): la empresa va como etiqueta. Una ciudad
     // no ("de Cali, ¿dónde quedan?" sigue diciendo de dónde es).
     out = out.replace(/^de\s+((?:\p{Lu}[\p{L}&.-]*)(?:\s+\p{Lu}[\p{L}&.-]*){0,3})\s*[,:]\s*/u, (all, label: string) =>
-      (normalize(label).split(' ').some((w) => PLACES.has(w)) ? all : `${label}: `));
+      (normalize(label).split(' ').every((w) => PLACES.has(w) || ['de', 'del', 'la', 'el', 'los', 'las'].includes(w)) ? all : `${label}: `));
   }
   // Lo que queda debe decir algo: "por favor" o "gracias" solos no son un tema.
   const said = normalize(out).replace(/\b(por favor|porfa|porfavor|porfis|plis|gracias|muchas|ok|listo|bueno|pues|si|no|hola|buenas|solo)\b/g, ' ')

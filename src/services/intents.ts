@@ -31,6 +31,12 @@ export interface Analysis {
   rest: string;
 }
 
+/**
+ * "¿Y el asesor no? por favor", "me pasas con un asesor, ¿no?": la coletilla "¿no?" pide confirmación; no niega nada.
+ * Se quita antes de leer la intención.
+ */
+export const withoutQuestionTag = (message: string) => message.replace(/([\p{L}\d])(?:[\s,]+¿?|\s*¿)\s*no\s*\?/giu, '$1 ');
+
 /* ---------- lo que va al inicio y no es el tema ---------- */
 
 /** "¿Cómo estás?", "¿qué más?", "¿cómo le va?", "¿cómo amaneció?", "¿todo bien?": saludo que pregunta cómo está. */
@@ -115,8 +121,10 @@ const HUMAN_PATTERNS = [
   // "Me atiende un asesor, por favor": lo pide (sin el "por favor", "¿me atiende un asesor?" pregunta quién atiende).
   /\bme (atiende|atienda|puede atender) (un |una |el |la )?(asesor|asesora|agente|persona|humano)\b.*\b(por favor|porfa|porfavor|plis|porfis)\b/,
   // "El asesor me colgó, quiero hablar con otro", "otro asesor por favor, el anterior no me ayudó": pide otro asesor.
-  /\b(quiero|necesito|quisiera|deseo|prefiero|me gustaria|pueden|puede|podrian) (hablar|que me atienda|ser atendid[oa]|que me pasen|pasarme) (con|por) otr[oa]\b(?! (cosa|tema|dia|momento|vez|pregunta|duda)\b)/,
-  /^(otro asesor|otra asesora|otro agente|otra agente)\b(?! (me|nos|le|les)\b)/,
+  // "Quiero que me atienda otro"; "¿pueden pasarme con otro número?" no pide un asesor.
+  /\b(quiero|necesito|quisiera|deseo|prefiero|me gustaria|pueden|puede|podrian) (hablar con|que me atienda|que me atiendan|ser atendid[oa] por|que me pasen con|pasarme con) otr[oa]\b(?! (cosa|tema|dia|momento|vez|pregunta|duda|numero|telefono|linea|correo|whatsapp|canal|area|departamento|sede|oficina)\b)/,
+  // "Otro asesor, por favor"; "otro asesor ya me había dicho…" o "otro asesor fue el que me atendió" cuentan lo que pasó.
+  /^(otro asesor|otra asesora|otro agente|otra agente)(?=$| por favor| porfa| porfavor| gracias)/,
 ];
 /**
  * Solo el pedido, sin más tema: "un asesor por favor", "otro asesor", "asesor de Offcorss", "asesor offcorss", "servicio
@@ -202,7 +210,7 @@ export const isSensitive = (n: string): boolean => {
 /* ---------- clasificación ---------- */
 
 export function analyze(message: string): Analysis {
-  const n = normalize(message);
+  const n = normalize(withoutQuestionTag(message));
   // Sin letras ni números: "👍" es un acuse; "?" o "??" es que no entendió o espera respuesta.
   if (!n) return { intent: /[?¿]/.test(message) ? 'help' : 'thanks', greeted: false, rest: '' };
   const { rest, greeted, acked, helped, called, howAreYou } = leads(n);
@@ -298,11 +306,14 @@ const ACCEPT_TAIL = /\b(si|sii+|si quiero|si por favor|si claro|claro que si|si 
  * soy Pedro Gómez", "Pedro, sí", "sí, Juan Pérez 1020304050". Un "ok, gracias" cierra; "no gracias, soy Pedro" no acepta.
  */
 export function acceptsOffer(message: string): boolean {
-  const n = normalize(message);
-  if (!n || /\bno\b/.test(n) || HUMAN_NEGATED.test(n)) return false;
+  const n = normalize(withoutQuestionTag(message));
+  if (!n || HUMAN_NEGATED.test(n)) return false;
+  // "Sí, no hay problema", "sí, pero no tengo la cédula a la mano": ese "no" no rechaza la oferta.
+  const soft = n.replace(/\b(no hay problema|no hay lio|no tengo problema|por que no|como no|no tengo (la|el|mi|mis) \w+( a la mano| aqui| ahora)?)\b/g, ' ');
+  if (/\bno\b/.test(soft)) return false;
   const answer = yesNo(message);
   if (answer === 'closing' || answer === 'no') return false;
-  return answer === 'yes' || ACCEPT_LEAD.test(n) || ACCEPT_TAIL.test(n);
+  return answer === 'yes' || ACCEPT_LEAD.test(soft.trim()) || ACCEPT_TAIL.test(soft.trim());
 }
 
 /** Lo que sigue a un "sí" ("sí, ¿cuál es el correo?", "sí, pero antes dime dónde quedan"): otra pregunta. */
@@ -418,7 +429,7 @@ const asksToo = (message: string, rest: string) => {
  * además preguntó otra cosa ("no quiero esperar, ¿cuál es el correo?"), que se responde al cancelar.
  */
 export function cancelOf(message: string, opts: { waiting?: boolean; answering?: boolean; hasData?: boolean } = {}): CancelResult {
-  const n = normalize(message);
+  const n = normalize(withoutQuestionTag(message));
   if (!n) return { cancel: false, question: false };
   const staying = STAYING.test(n);
   // Mientras se le piden los datos, "no quiero nada más" sí deja la solicitud (no va a darlos).
@@ -463,12 +474,12 @@ export const isCancel = (message: string, opts: { waiting?: boolean; answering?:
 const REFUSE_ONLY =
   /^(no+|nop|nel|no quiero|no deseo|no puedo|no puedo ahora|ahorita no puedo|ahora no puedo|no se|no lo se|no la se|no se cual|no se cual es|no se cual sera|no se cuales|no me acuerdo|no me acuerdo cual es|no recuerdo|no recuerdo cual es|no lo recuerdo|no la recuerdo|ni idea|ni idea cual|ni idea cual es|no tengo idea|no estoy segur[oa]|ninguna|ninguno|ninguna de esas|ninguna de las anteriores|ninguno de esos|no es ninguna|no es ninguna de esas|no la conozco|no la tengo|no lo tengo|no los tengo|no tengo|prefiero no|prefiero no decirlo|prefiero no darlo|prefiero no darlos|preferiria no|prefiero reservarlo|prefiero reservarmelo|no confio|no doy datos|anonimo|anonima|confidencial|es confidencial|es secreto|no te lo voy a decir|no te lo digo|no lo digo|no se lo voy a decir|no te voy a decir|no te digo)$/;
 const REFUSE_ANY =
-  /\b(no (quiero|deseo|puedo|voy a) (dar|darte|darle|darles|compartir|decir|decirte|decirle|suministrar|entregar|enviar|mandar)|no me interesa (dar|darte|darle|compartir|decir|decirte|darlos)|prefiero no (dar|darlo|darla|darlos|decir|decirlo|compartir|compartirlo)|preferiria no (dar|decir|compartir)|no (te |le |les |se )?(doy|dare) (mis |mi |el |la |esos |esa )?(datos|dato|cedula|documento|numero|nombre)|no (te |le |les |se )(la|lo|los|las) (doy|dare|digo|paso|voy a dar|voy a decir|voy a pasar)|no (la|lo|los|las) voy a (dar|decir|pasar|compartir)|no te voy a (decir|dar)|no (la|lo|los) tengo( a la mano| aqui| ahora| conmigo)?|no me (la|lo) se( de memoria)?|no me se (la|el|mi) (cedula|documento|numero)( de memoria)?|no (me )?(acuerdo|recuerdo)( de| del)?( mi| el| la)? (numero|cedula|documento|cartera|nombre)|no (se|recuerdo) (cual|que) (es )?(mi |la |el )?(cartera|numero|documento|cedula)|no tengo (el |la |mi )?(numero|documento|cedula|cartera)( a la mano| aqui| ahora| conmigo)?|no confio|por seguridad no|no (es|me parece) seguro|ya no me acuerdo|no tengo (por que|porque) (decir|decirte|decirle|darte|darle|dar)|no es (tu|su) (asunto|problema))\b|\bno (se|recuerdo|tengo idea|estoy segur[oa]) (cual|de cual|que|de que)( es| sera| seria| son)?$|\bno estoy segur[oa]\b(?! de (que|querer))|^(?:y )?(?:a ti|a usted) que\b|^(?:eso )?es (personal|privado)$|^(cualquiera|la que sea|el que sea|cualquiera de (las|los) dos|cualquiera de esas|cualquiera sirve)$/;
+  /\b(no (quiero|deseo|puedo|voy a) (dar|darte|darle|darles|compartir|decir|decirte|decirle|suministrar|entregar|enviar|mandar)|no me interesa (dar|darte|darle|compartir|decir|decirte|darlos)|prefiero no (dar|darlo|darla|darlos|decir|decirlo|compartir|compartirlo)|preferiria no (dar|decir|compartir)|no (te |le |les |se )?(doy|dare) (mis |mi |el |la |esos |esa )?(datos|dato|cedula|documento|numero|nombre)|no (te |le |les |se )(la|lo|los|las) (doy|dare|digo|paso|voy a dar|voy a decir|voy a pasar)|no (la|lo|los|las) voy a (dar|decir|pasar|compartir)|no te voy a (decir|dar)|no (la|lo|los) tengo( a la mano| aqui| ahora| conmigo)?|no me (la|lo) se( de memoria)?|no me se (la|el|mi) (cedula|documento|numero)( de memoria)?|no (me )?(acuerdo|recuerdo)( de| del)?( mi| el| la)? (numero|cedula|documento|cartera|nombre)|no (se|recuerdo) (cual|que) (es )?(mi |la |el )?(cartera|numero|documento|cedula)|no tengo (el |la |mi )?(numero|documento|cedula|cartera)( a la mano| aqui| ahora| conmigo)?|no confio|por seguridad no|no (es|me parece) seguro|ya no me acuerdo|no tengo (por que|porque) (decir|decirte|decirle|darte|darle|dar)|no es (tu|su) (asunto|problema)|(no|nunca|jamas) (te |le |les |se )?(paso|pasare|envio|mando|comparto|doy|dare) (mis |mi |el |la |los |las |esos |esa )?(datos|dato|cedula|documento|numero|nombre|informacion|nada)|(no|nunca) (te |le |les |se )(la|lo|los|las) (paso|doy|dare|envio|mando)|no (se|recuerdo|tengo idea de|tengo ni idea de) (mi|el|la|de mi) (numero|cedula|documento)|no se si (dar|darte|darle|darles|compartir|compartirte|decir|decirte|pasarte|pasar))\b|\bno (se|recuerdo|tengo idea|estoy segur[oa]) (cual|de cual|que|de que)( es| sera| seria| son)?$|\bno estoy segur[oa]\b(?! de (que|querer))|^(?:y )?(?:a ti|a usted) que\b|^(?:eso )?es (personal|privado)$|^(cualquiera|la que sea|el que sea|cualquiera de (las|los) dos|cualquiera de esas|cualquiera sirve)$/;
 /**
  * "¿Y a ti qué te importa?", "eso no te incumbe", "no le interesa": se niega a darle el dato al bot. "A ustedes no les
  * importa el cliente" es una queja, no una negativa.
  */
-const REFUSE_RUDE = /^(?:(?:y|pero|pues|eso|a ti|a usted|y a ti|y a usted|mi nombre|mi cedula|mi documento|mi numero|mis datos)\s+)*(?:que|no) (?:te|le) (?:importa|incumbe)\b|^(?:(?:y|pero|pues|eso|mi nombre|mi cedula|mi documento|mis datos)\s+)*no (?:te|le) (?:interesa|incumbe)\b/;
+const REFUSE_RUDE = /^(?:(?:y|pero|pues|eso|a ti|a usted|y a ti|y a usted|mi nombre|mi cedula|mi documento|mi numero|mis datos)\s+)*(?:que|no) (?:te|le) (?:importa|incumbe)(?: (?:eso|mi nombre|mis datos|mi cedula|mi vida))?$|^(?:(?:y|pero|pues|eso|mi nombre|mi cedula|mi documento|mis datos)\s+)*no (?:te|le) (?:interesa|incumbe)(?: (?:eso|mi nombre|mis datos))?$/;
 /** "Flamingo u Offcorss, no sé", "Juan Pérez, no recuerdo": no sabe (el dato que le piden). Contar su caso ("me cobran y no sé") no lo es. */
 const DONT_KNOW_END = /^(?:\S+\s+){0,5}(?:no se|no lo se|eso no lo se|no recuerdo|no lo recuerdo|no me acuerdo|ni idea|no tengo idea)$/;
 export function isRefuse(message: string): boolean {
@@ -510,6 +521,8 @@ const HOLD_ACT = /\b(miro|reviso|busco|te digo|le digo|les digo|escribo|vuelvo|r
 const HOLD_LATER = /\b(luego|despues|ahorita|ya|mas tarde|en un rato|en un momento|manana|en la tarde|en la noche) (te |le |les |se )?(lo |la |los |las )?(paso|doy|envio|mando|escribo|digo|comparto)\b(?=.*\b(cedula|documento|numero|nombre|datos|dato)\b)|\b(te|le|les|se) (paso|doy|envio|mando|escribo|comparto) (la|el|mi|mis|los|las) (cedula|documento|numero|nombre|datos|dato)\b|\b(escribo|paso|envio|vuelvo|regreso) con (la|el|mi|mis|los|las) (cedula|documento|numero|nombre|datos)\b/;
 export const isHold = (message: string) => {
   const n = normalize(message).replace(COURTESY_RE, ' ').replace(/\s+/g, ' ').trim();
+  // "No te doy mi cédula", "nunca te paso mis datos", "espera, no le doy mis datos": se niega, no pide un momento.
+  if (/\b(no|nunca|ni|jamas)\b(?: \S+){0,2}? (doy|dare|paso|pasare|envio|mando|comparto|digo|escribo)\b/.test(n)) return false;
   return HOLD_RE.test(n) || HOLD_ANY.test(n) || HOLD_LATER.test(n) || (HOLD_LEAD.test(n) && HOLD_ACT.test(n));
 };
 
@@ -524,7 +537,7 @@ export const isWhyData = (message: string) => WHY_DATA_RE.test(normalize(message
  */
 const WAIT_TAIL = '(?=$| (el asesor|la asesora|los asesores|un asesor|la atencion|en atender|en atenderme|en contestar|en responder|en contestarme|en responderme|en llegar|ustedes|eso|esto|mucho|tanto|todavia|aun|mas|para atenderme))';
 export const WAIT_RE = new RegExp(
-  `\\b(cuanto (tiempo )?(mas )?(se )?(demora|demoran|tarda|tardan)${WAIT_TAIL}|cuanto (tiempo )?(mas )?(falta|me falta|hay que esperar|debo esperar|tengo que esperar)|cuanto (mas )?(tengo|debo|hay) que esperar|(cuanto|que tanto) (me|nos) (toca|tocaria|toca a mi) esperar|(se )?(demoran|tardan|demora|tarda) mucho|a que hora (me )?(atienden|van a atender|contestan|escriben|responden|me atienden)|^(y )?(el|la) (asesor|asesora)$|cuando (llega|viene|me escribe|me contesta|me atiende) (el|la) (asesor|asesora)|en cuanto tiempo|para cuando|ya casi|falta mucho|falta poco|todavia falta|(ya )?(me )?(van a|vienen a|viene a) (atender|contestar|responder)|cuando (me )?(atienden|atenderan|contestan|responden|van a|me toca)|sigo esperando|sigo en (la )?(fila|espera|cola)|estoy esperando|llevo (mucho|rato|tiempo|horas|minutos)|nadie (me )?(ha |han )?(responde|contesta|atiende|respondido|contestado|atendido|escrito)|(el|la|mi|ningun|ninguna|un|una) (asesor|asesora|agente) (no|aun no|todavia no|nunca) (me )?(ha |han |me ha |me han )?(contesta|contestado|contesto|responde|respondido|respondio|escribe|escrito|escribio|atiende|atendido|atendio|aparece|llega|llego)|hay alguien|estan ahi|alguien (ahi|me atiende|me va a atender)|todavia no (me )?(atienden|contestan|responden)|aun no (me )?(atienden|contestan|responden)|ya viene|ya llega|(?:ya|aun|todavia) (?:me|nos) (?:atendieron|atendio)|no se si (?:ya )?(?:me |nos )?(?:atendieron|atendio|van a atender)|por que (se )?(demora|demoran|tarda|tardan)${WAIT_TAIL}|tanto tiempo|tan demorad[oa]s?|muy demorad[oa]s?|que demora|se demoran mucho|se demora mucho|en que (puesto|turno|lugar) voy|mi turno|cuantos (hay|faltan|van) (antes|delante)|ya me toca|apurad[oa]|de afan|es urgente)\\b`,
+  `\\b(cuanto (tiempo )?(mas )?(se )?(demora|demoran|tarda|tardan)${WAIT_TAIL}|cuanto (tiempo )?(mas )?(falta|me falta|hay que esperar|debo esperar|tengo que esperar)|cuanto (mas )?(tengo|debo|hay) que esperar|(cuanto|que tanto) (me|nos) (toca|tocaria|toca a mi) esperar|(se )?(demoran|tardan|demora|tarda) mucho|a que hora (me )?(atienden|van a atender|contestan|escriben|responden|me atienden)|^(y )?(el|la) (asesor|asesora)$|cuando (llega|viene|me escribe|me contesta|me atiende) (el|la) (asesor|asesora)|en cuanto tiempo|para cuando|ya casi|falta mucho|falta poco|todavia falta|(ya )?(me )?(van a|vienen a|viene a) (atender|contestar|responder)|cuando (me )?(atienden|atenderan|contestan|responden|van a|me toca)|sigo esperando|sigo en (la )?(fila|espera|cola)|estoy esperando|llevo (mucho|rato|tiempo|horas|minutos)|nadie (me )?(ha |han )?(responde|contesta|atiende|respondido|contestado|atendido|escrito)|(el|la|mi|ningun|ninguna|un|una) (asesor|asesora|agente) (no|aun no|todavia no|nunca) (me )?(ha |han |me ha |me han )?(contesta|contestado|contesto|responde|respondido|respondio|escribe|escrito|escribio|atiende|atendido|atendio|aparece|llega|llego)|hay alguien|estan ahi|alguien (ahi|me atiende|me va a atender)|todavia no (me )?(atienden|contestan|responden)|aun no (me )?(atienden|contestan|responden)|ya viene|ya llega|(?:ya|aun|todavia) (?:no )?(?:me|nos) (?:atendieron|atendio|han atendido|ha atendido)|nadie (?:me|nos) (?:va|van) a atender|no (?:me|nos) (?:han|ha) atendido|no se si (?:ya )?(?:me |nos )?(?:atendieron|atendio|van a atender)|por que (se )?(demora|demoran|tarda|tardan)${WAIT_TAIL}|tanto tiempo|tan demorad[oa]s?|muy demorad[oa]s?|que demora|se demoran mucho|se demora mucho|en que (puesto|turno|lugar) voy|mi turno|cuantos (hay|faltan|van) (antes|delante)|ya me toca|apurad[oa]|de afan|es urgente)\\b`,
 );
 export const isWaitQuestion = (message: string) => WAIT_RE.test(normalize(message));
 
