@@ -526,7 +526,10 @@ describe('coherencia del chat en vivo', () => {
     const [queued] = await talk(c, 'Hola, soy Marta Díaz, cédula 52000111, quiero hablar con un asesor');
     const taken = await sup.post(`/companies/${F.companyId}/chat-sessions/${queued.conversation.id}/take`, {});
     expect(taken.status).toBe(200);
-    expect(taken.body.message.content).toBe('Un asesor tomó tu solicitud y continuará la atención por este medio.');
+    // El usuario de la prueba se llama con un correo: al visitante no se le muestra.
+    expect(taken.body.message.content).toBe('Un asesor tomó tu conversación y te atenderá en vivo por este medio.');
+    const snapshot = await c.get('/conversation');
+    expect(snapshot.body.conversation.status).toBe('TOMADO_POR_ASESOR');
   });
 });
 

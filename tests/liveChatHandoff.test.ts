@@ -49,7 +49,9 @@ describe('toma de control del chatbot', () => {
     expect(list.body.items.map((x: any) => x.id)).toContain(conversationId);
     const taken = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/take`, { advisorId: fixture.advisorIds[0] });
     expect(taken.status).toBe(200);
-    expect(taken.body.conversation).toMatchObject({ status: 'TOMADO_POR_ASESOR', current_advisor_id: fixture.advisorIds[0] });
+    // Toma el control el usuario del panel que pulsa el botón (los asesores de WhatsApp solo reciben remisiones).
+    expect(taken.body.conversation).toMatchObject({ status: 'TOMADO_POR_ASESOR', current_advisor_id: null });
+    expect(taken.body.conversation.current_admin_id).toBeTruthy();
 
     const second = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/take`, { advisorId: fixture.advisorIds[1] });
     expect(second.status).toBe(409);

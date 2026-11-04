@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { api, type Admin } from './api';
 import { AdvisorsTab } from './tabs/AdvisorsTab';
 import { AuditTab } from './tabs/AuditTab';
-import { ButtonsTab } from './tabs/ButtonsTab';
 import { GeneralTab } from './tabs/GeneralTab';
 import { MetricsTab } from './tabs/MetricsTab';
 import { OriginsTab } from './tabs/OriginsTab';
@@ -17,7 +16,6 @@ const TABS = [
   ['origins', 'Dominios'],
   ['portfolios', 'Carteras'],
   ['advisors', 'Asesores y números'],
-  ['buttons', 'Botones'],
   ['records', 'Registros'],
   ['metrics', 'Métricas'],
   ['audit', 'Auditoría'],
@@ -46,7 +44,6 @@ export function CompanyPage({ id, admin, onBack }: { id: string; admin: Admin; o
           {tab === 'origins' && <OriginsTab companyId={id} />}
           {tab === 'portfolios' && <PortfoliosTab companyId={id} />}
           {tab === 'advisors' && <AdvisorsTab companyId={id} />}
-          {tab === 'buttons' && <ButtonsTab companyId={id} />}
           {tab === 'records' && <RecordsTab companyId={id} />}
           {tab === 'metrics' && <MetricsTab companyId={id} />}
           {tab === 'audit' && <AuditTab companyId={id} />}

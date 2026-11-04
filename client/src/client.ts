@@ -27,7 +27,7 @@ export interface ConversationMessage {
   content: string; metadata?: { waUrl?: string }; created_at: string;
 }
 export interface ConversationSnapshot {
-  conversation: null | { id: string; status: ConversationStatus; portfolio_id: string | null; current_advisor_id: string | null };
+  conversation: null | { id: string; status: ConversationStatus; portfolio_id: string | null; current_advisor_id: string | null; /** Quién atiende en vivo (usuario del panel que tomó el control). */ agent_name?: string | null };
   messages: ConversationMessage[];
 }
 export interface ChatProfile { portfolioKey?: string; document?: string; name?: string; subject?: string }

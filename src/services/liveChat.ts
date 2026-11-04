@@ -15,6 +15,8 @@ export interface LiveChatSession {
   id: string; company_id: string; public_session_id: string; portfolio_id: string | null;
   document: string | null; visitor_name: string | null; subject: string; status: ChatStatus;
   current_advisor_id: string | null; pending_transfer_to: string | null; waiting_since: string | null;
+  /** Usuario del panel que tomó el control (lo atiende en vivo). */
+  current_admin_id?: string | null;
   taken_at: string | null; started_at: string; last_interaction_at: string; closed_at: string | null;
   close_reason: string | null; summary: string;
   /** La cartera la puso el sistema al pasar a la cola (no la eligió el visitante): la que diga después la reemplaza. */
@@ -26,7 +28,7 @@ export interface ChatMessage {
   advisor_name?: string | null; content: string; metadata?: Record<string, unknown>; created_at: string;
 }
 
-const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS NOT NULL AND current_advisor_id IS NULL THEN 'EN_ESPERA_ASESOR' ELSE 'BOT_ACTIVO' END,
+const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS NOT NULL AND current_advisor_id IS NULL AND current_admin_id IS NULL THEN 'EN_ESPERA_ASESOR' ELSE 'BOT_ACTIVO' END,
   last_seen_at = now(), updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`;
 
 /** Palabras de "quiero hablar con un asesor": sin ellas se ve si el mensaje traía además un tema. */
@@ -498,14 +500,23 @@ export async function touchConversation(q: Queryable, companyId: string, publicS
 }
 
 export async function publicConversation(q: Queryable, companyId: string, publicSessionId: string) {
-  const conversation = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [companyId, publicSessionId])).rows[0] ?? null;
+  const conversation = (await q.query<LiveChatSession & { agent_name: string | null }>(
+    `SELECT s.*, CASE WHEN s.status = 'TOMADO_POR_ASESOR' THEN COALESCE(ad.name, a.name) END AS agent_name FROM chat_sessions s
+     LEFT JOIN admins ad ON ad.id = s.current_admin_id
+     LEFT JOIN advisors a ON a.id = s.current_advisor_id AND a.company_id = s.company_id
+     WHERE s.company_id = $1 AND s.public_session_id = $2`, [companyId, publicSessionId])).rows[0] ?? null;
   if (!conversation) return { conversation: null, messages: [] as ChatMessage[] };
   const messages = (await q.query<ChatMessage>(
-    `SELECT m.id, m.chat_session_id, m.sender_type, m.advisor_id, a.name AS advisor_name, m.content, m.metadata, m.created_at
-     FROM chat_messages m LEFT JOIN advisors a ON a.id = m.advisor_id AND a.company_id = m.company_id
+    `SELECT m.id, m.chat_session_id, m.sender_type, m.advisor_id, COALESCE(ad.name, a.name) AS advisor_name, m.content, m.metadata, m.created_at
+     FROM chat_messages m LEFT JOIN advisors a ON a.id = m.advisor_id AND a.company_id = m.company_id LEFT JOIN admins ad ON ad.id = m.admin_id
      WHERE m.company_id = $1 AND m.chat_session_id = $2 ORDER BY m.created_at, m.id`, [companyId, conversation.id],
   )).rows;
-  return { conversation, messages };
+  // Al visitante se le muestra el nombre de quien atiende, nunca un correo.
+  const shown = (name: string | null | undefined) => (name && !name.includes('@') ? name : null);
+  return {
+    conversation: { ...conversation, agent_name: shown(conversation.agent_name) },
+    messages: messages.map((m) => ({ ...m, advisor_name: shown(m.advisor_name) })),
+  };
 }
 
 export async function advisorCanAccess(q: Queryable, admin: Admin, companyId: string, portfolio: string | null) {
@@ -539,11 +550,12 @@ export async function listConversations(q: Queryable, companyId: string, admin: 
   if (filters.to && !Number.isNaN(Date.parse(filters.to))) add('s.started_at <= ?::timestamptz', new Date(filters.to).toISOString());
   if (filters.pending === 'true') where += ` AND s.status = 'EN_ESPERA_ASESOR'`;
   return (await q.query<any>(
-    `SELECT s.*, p.name AS portfolio_name, a.name AS advisor_name, m.content AS last_message,
+    `SELECT s.*, p.name AS portfolio_name, COALESCE(ad.name, a.name) AS advisor_name, m.content AS last_message,
        GREATEST(0, EXTRACT(EPOCH FROM (now() - COALESCE(s.waiting_since, s.last_interaction_at)))::int) AS waiting_seconds
      FROM chat_sessions s
      LEFT JOIN portfolios p ON p.id = s.portfolio_id AND p.company_id = s.company_id
      LEFT JOIN advisors a ON a.id = s.current_advisor_id AND a.company_id = s.company_id
+     LEFT JOIN admins ad ON ad.id = s.current_admin_id
      LEFT JOIN LATERAL (SELECT content FROM chat_messages WHERE chat_session_id = s.id ORDER BY created_at DESC, id DESC LIMIT 1) m ON true
      WHERE ${where} ORDER BY CASE s.status WHEN 'EN_ESPERA_ASESOR' THEN 0 WHEN 'TOMADO_POR_ASESOR' THEN 1 ELSE 2 END, s.last_interaction_at DESC LIMIT 200`, values,
   )).rows;
@@ -551,14 +563,16 @@ export async function listConversations(q: Queryable, companyId: string, admin: 
 
 export async function getConversationForAdmin(q: Queryable, companyId: string, chatId: string, admin: Admin) {
   const conversation = (await q.query<any>(
-    `SELECT s.*, p.name AS portfolio_name, a.name AS advisor_name FROM chat_sessions s
+    `SELECT s.*, p.name AS portfolio_name, COALESCE(ad.name, a.name) AS advisor_name FROM chat_sessions s
+     LEFT JOIN admins ad ON ad.id = s.current_admin_id
      LEFT JOIN portfolios p ON p.id = s.portfolio_id AND p.company_id = s.company_id
      LEFT JOIN advisors a ON a.id = s.current_advisor_id AND a.company_id = s.company_id
      WHERE s.id = $1 AND s.company_id = $2`, [chatId, companyId],
   )).rows[0];
   if (!conversation || !(await advisorCanAccess(q, admin, companyId, conversation.portfolio_id))) throw notFound('Conversación no encontrada');
   const messages = (await q.query<any>(
-    `SELECT m.*, a.name AS advisor_name FROM chat_messages m LEFT JOIN advisors a ON a.id = m.advisor_id AND a.company_id = m.company_id
+    `SELECT m.*, COALESCE(ad.name, a.name) AS advisor_name FROM chat_messages m LEFT JOIN advisors a ON a.id = m.advisor_id AND a.company_id = m.company_id
+     LEFT JOIN admins ad ON ad.id = m.admin_id
      WHERE m.chat_session_id = $1 AND m.company_id = $2 ORDER BY m.created_at, m.id`, [chatId, companyId],
   )).rows;
   return { conversation, messages };
@@ -571,6 +585,8 @@ export function actorAdvisor(admin: Admin): string {
 
 export function ownerOrManager(admin: Admin, conversation: LiveChatSession) {
   if (admin.role !== 'advisor') return;
+  // Quien tomó el control desde el panel puede seguir atendiendo.
+  if (conversation.current_admin_id === admin.id) return;
   if (!admin.advisor_id || conversation.current_advisor_id !== admin.advisor_id) throw forbidden('Solo el asesor dueño o un administrador puede realizar esta acción');
 }
 

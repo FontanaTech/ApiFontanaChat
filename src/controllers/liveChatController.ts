@@ -85,18 +85,11 @@ export function liveChatController(deps: AppDeps) {
       const result = await deps.db.tx(async (q) => {
         const before = await lockConversation(q, cid(req), chatId(req));
         if (!['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(before.status)) throw conflict('La conversación ya está tomada o finalizada');
-        // Tomar control no pide elegir asesor: se usa el vinculado a la cuenta o, si no hay, el menos cargado de la cartera (o cualquiera activo).
-        let advisorId = req.admin!.role === 'advisor' ? actorAdvisor(req.admin!) : (body.advisorId ?? req.admin!.advisor_id ?? null);
-        if (!advisorId) {
-          advisorId = (await q.query<{ id: string }>(
-            `SELECT a.id FROM advisors a
-             LEFT JOIN advisor_portfolios ap ON ap.advisor_id = a.id AND ap.company_id = a.company_id AND ap.portfolio_id = $2
-             LEFT JOIN chat_sessions c ON c.current_advisor_id = a.id AND c.status = 'TOMADO_POR_ASESOR'
-             WHERE a.company_id = $1 AND a.active
-             GROUP BY a.id, ap.portfolio_id, a.created_at ORDER BY (ap.portfolio_id IS NULL), count(c.id), a.created_at LIMIT 1`, [cid(req), before.portfolio_id],
-          )).rows[0]?.id ?? null;
-        }
-        if (!advisorId) throw badRequest('No hay asesores creados: agrega uno en «Asesores y números»');
+        // Tomar control lo hace el usuario del panel que pulsa el botón: la conversación queda a su nombre. Los asesores de
+        // WhatsApp (números) solo reciben remisiones; si la cuenta está vinculada a uno, también queda registrado.
+        void body;
+        const advisorId = req.admin!.role === 'advisor' ? actorAdvisor(req.admin!) : (req.admin!.advisor_id ?? null);
+        if (advisorId) {
         const eligible = await q.query<any>(
           `SELECT a.id, COALESCE(s.status, 'offline') AS status FROM advisors a
            LEFT JOIN advisor_status s ON s.advisor_id = a.id WHERE a.id = $1 AND a.company_id = $2 AND a.active`, [advisorId, cid(req)],
@@ -107,25 +100,28 @@ export function liveChatController(deps: AppDeps) {
           await q.query(`INSERT INTO advisor_status (advisor_id, company_id, status, last_activity_at, updated_at) VALUES ($1,$2,'available',now(),now())
             ON CONFLICT (advisor_id) DO UPDATE SET status = 'available', last_activity_at = now(), updated_at = now()`, [advisorId, cid(req)]);
         }
-        if (before.portfolio_id) {
+        if (before.portfolio_id && req.admin!.role === 'advisor') {
           const access = await q.query('SELECT 1 FROM advisor_portfolios WHERE company_id = $1 AND advisor_id = $2 AND portfolio_id = $3', [cid(req), advisorId, before.portfolio_id]);
           if (!access.rows[0]) throw forbidden('El asesor no está autorizado para esta cartera');
         }
+        }
         const conversation = (await q.query<any>(
-          `UPDATE chat_sessions SET status = 'TOMADO_POR_ASESOR', current_advisor_id = $3, pending_transfer_to = NULL,
+          `UPDATE chat_sessions SET status = 'TOMADO_POR_ASESOR', current_advisor_id = $3, current_admin_id = $4, pending_transfer_to = NULL,
              taken_at = now(), waiting_since = NULL, updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
-          [before.id, cid(req), advisorId],
+          [before.id, cid(req), advisorId, req.admin!.id],
         )).rows[0];
+        // Al visitante se le muestra el nombre del usuario, nunca su correo.
+        const who = req.admin!.name?.trim() && !req.admin!.name.includes('@') ? req.admin!.name.trim() : null;
         const message = (await q.query<any>(
-          `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content)
-           VALUES ($1,$2,'SYSTEM','Un asesor tomó tu solicitud y continuará la atención por este medio.') RETURNING *`,
-          [cid(req), before.id],
+          `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content, metadata)
+           VALUES ($1,$2,'SYSTEM',$3,jsonb_build_object('kind','take')) RETURNING *`,
+          [cid(req), before.id, who ? `${who} tomó tu conversación y te atenderá en vivo por este medio.` : 'Un asesor tomó tu conversación y te atenderá en vivo por este medio.'],
         )).rows[0];
-        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, action) VALUES ($1,$2,$3,'TAKE')`, [cid(req), before.id, advisorId]);
+        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, admin_id, action) VALUES ($1,$2,$3,$4,'TAKE')`, [cid(req), before.id, advisorId, req.admin!.id]);
         await auditChat(q, req.admin!, cid(req), before.id, 'TAKE_CONTROL', before, conversation);
         return { conversation, message };
       });
-      publish(cid(req), 'chat_assignment', { conversationId: result.conversation.id, advisorId: result.conversation.current_advisor_id });
+      publish(cid(req), 'chat_assignment', { conversationId: result.conversation.id, advisorId: result.conversation.current_advisor_id, adminId: result.conversation.current_admin_id });
       publish(cid(req), 'chat_message', { conversationId: result.conversation.id, messageId: result.message.id, sender: 'SYSTEM' });
       res.json(result);
     },
@@ -134,14 +130,17 @@ export function liveChatController(deps: AppDeps) {
       const body = parse(v.advisorMessageBody, req.body);
       const result = await deps.db.tx(async (q) => {
         const conversation = await lockConversation(q, cid(req), chatId(req));
-        if (conversation.status !== 'TOMADO_POR_ASESOR' || !conversation.current_advisor_id) throw conflict('La conversación no está tomada');
+        if (conversation.status !== 'TOMADO_POR_ASESOR' || !(conversation.current_admin_id || conversation.current_advisor_id)) throw conflict('La conversación no está tomada');
         ownerOrManager(req.admin!, conversation);
+        // El mensaje va a nombre de quien lo escribe en el panel.
         const message = (await q.query<any>(
-          `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, advisor_id, content)
-           VALUES ($1,$2,'ADVISOR',$3,$4) RETURNING *`, [cid(req), conversation.id, conversation.current_advisor_id, body.message],
+          `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, advisor_id, admin_id, content)
+           VALUES ($1,$2,'ADVISOR',$3,$4,$5) RETURNING *`, [cid(req), conversation.id, conversation.current_advisor_id, req.admin!.id, body.message],
         )).rows[0];
         await q.query('UPDATE chat_sessions SET last_interaction_at = now(), updated_at = now() WHERE id = $1', [conversation.id]);
-        await q.query('UPDATE advisor_status SET last_activity_at = now(), updated_at = now() WHERE advisor_id = $1', [conversation.current_advisor_id]);
+        if (conversation.current_advisor_id) {
+          await q.query('UPDATE advisor_status SET last_activity_at = now(), updated_at = now() WHERE advisor_id = $1', [conversation.current_advisor_id]);
+        }
         return { conversation, message };
       });
       publish(cid(req), 'chat_message', { conversationId: result.conversation.id, messageId: result.message.id, sender: 'ADVISOR' });
@@ -191,7 +190,7 @@ export function liveChatController(deps: AppDeps) {
         const needsPortfolio = `($3 = 'EN_ESPERA_ASESOR' AND (portfolio_id IS NULL OR NOT EXISTS (
             SELECT 1 FROM portfolios p WHERE p.id = chat_sessions.portfolio_id AND p.company_id = $2 AND p.active)))`;
         const conversation = (await q.query<any>(
-          `UPDATE chat_sessions SET status = $3, current_advisor_id = NULL, pending_transfer_to = NULL, taken_at = NULL,
+          `UPDATE chat_sessions SET status = $3, current_advisor_id = NULL, current_admin_id = NULL, pending_transfer_to = NULL, taken_at = NULL,
              waiting_since = CASE WHEN $3 = 'EN_ESPERA_ASESOR' THEN now() ELSE NULL END,
              portfolio_auto = CASE WHEN ${needsPortfolio} AND ${queuePortfolio} IS NOT NULL THEN true ELSE portfolio_auto END,
              portfolio_id = CASE WHEN ${needsPortfolio} THEN COALESCE(${queuePortfolio}, portfolio_id) ELSE portfolio_id END,
@@ -208,8 +207,8 @@ export function liveChatController(deps: AppDeps) {
            VALUES ($1,$2,'SYSTEM',$3,jsonb_build_object('kind','release','destination',$4::text)) RETURNING *`,
           [cid(req), before.id, notice, body.destination],
         )).rows[0];
-        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, action) VALUES ($1,$2,$3,$4)`,
-          [cid(req), before.id, before.current_advisor_id, body.destination === 'bot' ? 'RELEASE_BOT' : 'RELEASE_QUEUE']);
+        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, admin_id, action) VALUES ($1,$2,$3,$4,$5)`,
+          [cid(req), before.id, before.current_advisor_id, req.admin!.id, body.destination === 'bot' ? 'RELEASE_BOT' : 'RELEASE_QUEUE']);
         await auditChat(q, req.admin!, cid(req), before.id, 'RELEASE', before, conversation);
         return { conversation, message };
       });
@@ -241,8 +240,8 @@ export function liveChatController(deps: AppDeps) {
         const advisorId = actorAdvisor(req.admin!);
         if (before.pending_transfer_to !== advisorId) throw forbidden('No tienes una transferencia pendiente para este chat');
         const conversation = (await q.query<any>(
-          `UPDATE chat_sessions SET current_advisor_id = $3, pending_transfer_to = NULL, taken_at = now(), updated_at = now()
-           WHERE id = $1 AND company_id = $2 RETURNING *`, [before.id, cid(req), advisorId],
+          `UPDATE chat_sessions SET current_advisor_id = $3, current_admin_id = $4, pending_transfer_to = NULL, taken_at = now(), updated_at = now()
+           WHERE id = $1 AND company_id = $2 RETURNING *`, [before.id, cid(req), advisorId, req.admin!.id],
         )).rows[0];
         await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, target_advisor_id, action) VALUES ($1,$2,$3,$4,'TRANSFER_ACCEPT')`, [cid(req), before.id, before.current_advisor_id, advisorId]);
         await auditChat(q, req.admin!, cid(req), before.id, 'TRANSFER_ACCEPT', before, conversation);
@@ -314,7 +313,7 @@ export function liveChatController(deps: AppDeps) {
              closed_at = now(), pending_transfer_to = NULL, updated_at = now() WHERE id = $1 AND company_id = $2 RETURNING *`,
           [before.id, cid(req), body.reason, body.summary ?? ''],
         )).rows[0];
-        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, action) VALUES ($1,$2,$3,'CLOSE')`, [cid(req), before.id, before.current_advisor_id]);
+        await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, admin_id, action) VALUES ($1,$2,$3,$4,'CLOSE')`, [cid(req), before.id, before.current_advisor_id, req.admin!.id]);
         await auditChat(q, req.admin!, cid(req), before.id, 'CLOSE', before, conversation);
         return conversation;
       });

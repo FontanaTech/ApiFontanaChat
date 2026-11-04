@@ -7,7 +7,7 @@ interface Conversation { id: string; visitor_name: string | null; document: stri
 interface Message { id: string; sender_type: 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM'; advisor_name?: string | null; content: string; created_at: string; metadata?: { waUrl?: string } }
 interface Advisor { id: string; name: string; status: 'available' | 'busy' | 'offline'; portfolio_ids: string[]; active_chats: number; chats_today: number; last_activity_at: string | null }
 
-const LABELS: Record<Status, string> = { BOT_ACTIVO: 'Bot activo', EN_ESPERA_ASESOR: 'En espera', TOMADO_POR_ASESOR: 'Con asesor', REMITIDO_WHATSAPP: 'Remitido', CERRADO: 'Cerrado', ABANDONADO: 'Abandonado' };
+const LABELS: Record<Status, string> = { BOT_ACTIVO: 'Bot activo', EN_ESPERA_ASESOR: 'En espera', TOMADO_POR_ASESOR: 'En vivo', REMITIDO_WHATSAPP: 'Remitido', CERRADO: 'Cerrado', ABANDONADO: 'Abandonado' };
 const ago = (n: number) => n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)} min` : `${Math.floor(n / 3600)} h`;
 
 export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: Admin }) {
@@ -84,7 +84,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
           onClick={() => { setSelected(conversation.id); setPortfolio(conversation.portfolio_id ?? ''); }}
         >
           <span><strong>{conversation.visitor_name || conversation.document || `Sesión ${conversation.id.slice(0, 8)}`}</strong><em className={`chat-status ${conversation.status}`}>{LABELS[conversation.status]}</em></span>
-          <small>{conversation.portfolio_name || 'Sin cartera'} · {conversation.advisor_name || 'Sin asesor'}</small>
+          <small>{conversation.portfolio_name || 'Sin cartera'}{conversation.status === 'TOMADO_POR_ASESOR' ? ` · Atendido en vivo por ${conversation.advisor_name || 'un asesor'}` : ''}</small>
           <p>{conversation.last_message || 'Sin mensajes'}</p>
           <time>{fmt(conversation.last_interaction_at)}{conversation.status === 'EN_ESPERA_ASESOR' ? ` · espera ${ago(conversation.waiting_seconds)}` : ''}</time>
         </button>)}
@@ -94,7 +94,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
         {!current && <div className="empty-chat"><h3>Selecciona una conversación</h3></div>}
         {current && <>
           <header className="conversation-header">
-            <div><h3>{current.visitor_name || `Sesión ${current.id.slice(0, 8)}`}</h3><p className="muted">{current.document ? `Documento ${current.document} · ` : ''}{current.portfolio_name || 'Sin cartera'} · {LABELS[current.status]}</p></div>
+            <div><h3>{current.visitor_name || `Sesión ${current.id.slice(0, 8)}`}</h3><p className="muted">{current.document ? `Documento ${current.document} · ` : ''}{current.portfolio_name || 'Sin cartera'} · {current.status === 'TOMADO_POR_ASESOR' ? `Atendido en vivo por ${current.advisor_name || 'un asesor'}` : LABELS[current.status]}</p></div>
           </header>
           <div className="messages" aria-live="polite">
             {detail.data?.messages.map((message) => <article key={message.id} className={`message ${message.sender_type.toLowerCase()}`}>
