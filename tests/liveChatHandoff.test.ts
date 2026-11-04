@@ -25,27 +25,31 @@ beforeAll(async () => {
 afterAll(async () => env.db.close());
 
 describe('toma de control del chatbot', () => {
-  it('persiste el diálogo del bot y escala dentro del mismo chat web', async () => {
+  it('persiste el diálogo del bot y remite a WhatsApp con el número de un asesor de la cartera', async () => {
     const hello = await visitor.post('/chat', { message: 'hola', live: true, name: 'Visitante Demo', document: '10000001' });
     expect(hello.status).toBe(200);
     expect(hello.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
 
-    // Ya dio nombre y documento y la empresa tiene una sola cartera activa: pedir un asesor pasa directo a la cola,
-    // sin preguntar una cartera que no hay que elegir.
+    // La empresa tiene una sola cartera activa: pedir un asesor remite directo a WhatsApp, sin preguntar una cartera que
+    // no hay que elegir. El chat sigue abierto (el panel puede tomarlo), pero el visitante no cuenta con eso.
     const human = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
-    expect(human.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
-    expect(human.body.message).toMatch(/Tu solicitud quedó en espera/);
-    expect(human.body.message).not.toMatch(/cartera/i);
+    expect(human.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(human.body.waUrl).toMatch(/^https:\/\/wa\.me\/\d+\?text=/);
+    expect(human.body.message).toMatch(/WhatsApp/);
+    expect(human.body.message).not.toMatch(/cartera|en espera|este mismo chat/i);
+    // Sin una consulta concreta, el mensaje es uno base que pide la información.
+    expect(decodeURIComponent(human.body.waUrl)).toContain('Quiero hablar con un asesor para solicitar información');
     conversationId = human.body.conversation.id;
     const snapshot = await visitor.get('/conversation');
     expect(snapshot.body.conversation).toMatchObject({ id: conversationId, visitor_name: 'Visitante Demo', document: '10000001' });
     // La única cartera queda asignada: el panel la muestra y se puede remitir a WhatsApp sin elegirla.
     expect(snapshot.body.conversation.portfolio_id).toBeTruthy();
-    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER', 'SYSTEM']);
+    expect(snapshot.body.messages.map((m: any) => m.sender_type)).toEqual(['USER', 'BOT', 'USER', 'BOT']);
+    expect(snapshot.body.messages.at(-1).metadata.waUrl).toBe(human.body.waUrl);
   });
 
   it('un asesor toma el chat de forma exclusiva y el bot queda pausado', async () => {
-    const list = await manager.get(`/companies/${fixture.companyId}/chat-sessions?pending=true`);
+    const list = await manager.get(`/companies/${fixture.companyId}/chat-sessions?view=live`);
     expect(list.body.items.map((x: any) => x.id)).toContain(conversationId);
     const taken = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${conversationId}/take`, { advisorId: fixture.advisorIds[0] });
     expect(taken.status).toBe(200);
@@ -150,7 +154,7 @@ describe('tomar control sin elegir asesor', () => {
 });
 
 describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
-  it('si no sabe responder ofrece un asesor; si el visitante contesta con sus datos pasa a la cola y sigue conversando', async () => {
+  it('si no sabe responder ofrece un asesor; si el visitante da su cartera lo remite a WhatsApp y sigue conversando', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     // Una pregunta que no puede responder (a lo que no se entiende, como "Skdjbdd", le pide que cuente más).
     const unknown = await guest.post('/chat', { message: '¿Atienden los domingos?', live: true });
@@ -159,12 +163,13 @@ describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
     expect(unknown.body.message).toMatch(/¿Quieres que te comunique con un asesor\?$/);
     expect(unknown.body.message).not.toMatch(/nombre|documento/i);
     const data = await guest.post('/chat', { message: 'Pedro Gómez 30000003 general', live: true });
-    expect(data.body.conversation.status).toBe('EN_ESPERA_ASESOR');
+    expect(data.body.conversation.status).toBe('BOT_ACTIVO');
+    expect(data.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
     const snap = await guest.get('/conversation');
     expect(snap.body.conversation).toMatchObject({ visitor_name: 'Pedro Gómez', document: '30000003' });
     const more = await guest.post('/chat', { message: 'hola', live: true });
     expect(more.status).toBe(200);
-    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     expect(more.body.message).not.toMatch(/documento|cartera/i);
   });
 });
@@ -206,36 +211,39 @@ describe('continuidad al pedir los datos', () => {
     expect(snap.body.conversation).toMatchObject({ visitor_name: 'Juan', document: '1002003004', status: 'BOT_ACTIVO' });
   });
 
-  it('con una sola cartera, pedir un asesor pasa directo a la cola sin pedir nombre ni documento', async () => {
+  it('con una sola cartera, pedir un asesor remite directo a WhatsApp sin pedir nombre ni documento', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     const ask = await guest.post('/chat', { message: 'quiero hablar con un asesor', live: true });
-    expect(ask.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
-    expect(ask.body.message).toMatch(/Te comunico con un asesor/);
+    expect(ask.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(ask.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
+    expect(ask.body.message).toMatch(/Te remito con un asesor por WhatsApp/);
     expect(ask.body.message).not.toMatch(/nombre|documento|cartera/i);
   });
 });
 
 describe('reglas ordenadas: el bot entiende los datos aunque vengan en frases largas', () => {
-  it('caso real: corrige el nombre, toma documento y "cartera de prueba" (plural/singular) y pasa a la cola sin repetir', async () => {
+  it('caso real: corrige el nombre, toma documento y "cartera de prueba" (plural/singular) y remite a WhatsApp sin repetir', async () => {
     await manager.post(`/companies/${fixture.companyId}/portfolios`, { key: 'pruebas', name: 'Cartera de pruebas' });
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     const ask = await guest.post('/chat', { message: 'necesito hablar con un asesor', live: true });
     expect(ask.body.message).toMatch(/Te comunico con un asesor/);
+    expect(ask.body.waUrl).toBeUndefined(); // todavía falta la cartera
     const name = await guest.post('/chat', { message: 'te estoy diciendo que mi nombre es Juan ESTEBAN', live: true });
     expect(name.body.message).toMatch(/^Gracias, Juan\./);
     expect(name.body.message).not.toMatch(/tu nombre/);
     expect(name.body.message).not.toMatch(/Esa consulta la atiende mejor/);
     const done = await guest.post('/chat', { message: '1021803088 NUMERO DE DOCUMENTO Y MI CARTERA ES CARTERA DE PRUEBA', live: true });
-    expect(done.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(done.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(done.body.waUrl).toMatch(/^https:\/\/wa\.me\//);
     const snap = await guest.get('/conversation');
     expect(snap.body.conversation).toMatchObject({ visitor_name: 'Juan Esteban', document: '1021803088' });
     const portfolios = await manager.get(`/companies/${fixture.companyId}/portfolios`);
     expect(snap.body.conversation.portfolio_id).toBe(portfolios.body.items.find((p: any) => p.key === 'pruebas').id);
     // El tema para el asesor/WhatsApp no es un dato ("mi nombre es…").
     expect(snap.body.conversation.subject).not.toMatch(/nombre es/i);
-    // Sigue en espera y el bot sigue atendiendo sin volver a pedir datos.
+    // El chat sigue abierto y el bot sigue atendiendo sin volver a pedir datos.
     const more = await guest.post('/chat', { message: 'hola', live: true });
-    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(more.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     expect(more.body.message).not.toMatch(/documento|cartera/i);
   });
 

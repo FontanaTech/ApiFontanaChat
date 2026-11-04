@@ -24,7 +24,7 @@ export interface HandoffInput {
 
 export function buildWaUrl(number: string, companyName: string, name: string, reason: string, ref: string): string {
   const intro = name ? `Hola ${companyName}, soy ${name}.` : `Hola ${companyName}.`;
-  const text = `${intro} ${reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor.'} (Ref. ${ref})`;
+  const text = `${intro} ${reason ? `Quiero consultar sobre: ${reason}.` : 'Quiero hablar con un asesor para solicitar información.'} (Ref. ${ref})`;
   return `https://wa.me/${number}?text=${encodeURIComponent(text)}`;
 }
 

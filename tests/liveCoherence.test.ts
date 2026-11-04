@@ -244,9 +244,35 @@ describe('coherencia del chat en vivo', () => {
     expect(no.message).toMatch(/^Entiendo, no hay problema\./);
   });
 
-  it('en la cola puede desistir; "no gracias" a "¿te ayudo con algo más?" no suelta la solicitud', async () => {
+  it('al pedir un asesor se remite a WhatsApp y el chat sigue abierto para el panel', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
-    const [queued, no, cancel, after] = await talk(c, 'Hola, soy Pedro Ruiz, cédula 52000112, quiero hablar con un asesor', 'no gracias', 'ya no necesito el asesor, gracias', '¿qué es la asesoría legal?');
+    const [referred, after] = await talk(c, 'Hola, soy Pedro Ruiz, cédula 52000112, quiero hablar con un asesor', '¿qué es la asesoría legal?');
+    expect(referred).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(referred.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
+    expect(referred.message).toMatch(/Te remito con un asesor por WhatsApp/);
+    expect(after).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(after.waUrl).toBeUndefined();
+  });
+
+  it('el mensaje de WhatsApp lleva lo que preguntó el visitante; sin una consulta, uno base que pide información', async () => {
+    const c = await publicClient(env, 'coherencia', ORIGIN);
+    const [withTopic] = await talk(c, 'tengo una deuda atrasada y quiero hablar con un asesor');
+    const text = decodeURIComponent(new URL(withTopic.waUrl).searchParams.get('text')!);
+    expect(text).toMatch(/Quiero consultar sobre: .*deuda/i);
+    expect(withTopic.message).toMatch(/El mensaje ya lleva tu consulta/);
+    const d = await publicClient(env, 'coherencia', ORIGIN);
+    const [bare] = await talk(d, 'quiero hablar con un asesor');
+    expect(decodeURIComponent(new URL(bare.waUrl).searchParams.get('text')!)).toMatch(/Quiero hablar con un asesor para solicitar información/);
+    expect(bare.message).not.toMatch(/ya lleva tu consulta/);
+  });
+
+  it('en la cola (si el panel deja ahí un chat) puede desistir; "no gracias" a "¿te ayudo con algo más?" no suelta la solicitud', async () => {
+    const c = await publicClient(env, 'coherencia', ORIGIN);
+    const [referred] = await talk(c, 'Hola, soy Pedro Ruiz, cédula 52000112, quiero hablar con un asesor');
+    // El bot ya no deja a nadie en la fila: el panel puede tomar el chat y devolverlo a la fila.
+    expect((await sup.post(`/companies/${F.companyId}/chat-sessions/${referred.conversation.id}/take`, {})).status).toBe(200);
+    expect((await sup.post(`/companies/${F.companyId}/chat-sessions/${referred.conversation.id}/release`, { destination: 'queue' })).status).toBe(200);
+    const [queued, no, cancel, after] = await talk(c, 'hola', 'no gracias', 'ya no necesito el asesor, gracias', '¿qué es la asesoría legal?');
     expect(queued.conversation.status).toBe('EN_ESPERA_ASESOR');
     expect(no.conversation.status).toBe('EN_ESPERA_ASESOR');
     expect(cancel).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
@@ -278,12 +304,12 @@ describe('coherencia del chat en vivo', () => {
     expect(snap.messages.some((m: any) => m.sender_type === 'SYSTEM' && /finalizó la atención/.test(m.content))).toBe(true);
   });
 
-  it('dos mensajes a la vez se atienden en orden: tras pasar a la cola no vuelve a pedir datos', async () => {
+  it('dos mensajes a la vez se atienden en orden: tras remitir a WhatsApp no vuelve a pedir datos', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     await talk(c, 'quiero hablar con un asesor');
     await Promise.all([c.post('/chat', { message: 'Juan Pérez 1020304050', live: true }), c.post('/chat', { message: 'gracias', live: true })]);
     const msgs = (await c.get('/conversation')).body.messages;
-    const queuedAt = msgs.findIndex((m: any) => m.sender_type === 'SYSTEM');
+    const queuedAt = msgs.findIndex((m: any) => m.metadata?.waUrl);
     expect(queuedAt).toBeGreaterThan(0);
     for (const m of msgs.slice(queuedAt + 1)) expect(m.content).not.toMatch(/me compartes|compárteme|me falta/);
   });
@@ -324,7 +350,8 @@ describe('coherencia del chat en vivo', () => {
     }
   });
 
-  it('revisión 2: "ya cancelé" no cancela; en la cola "mejor no" responde a la pregunta del bot', async () => {
+  // Flujo anterior (el bot dejaba al visitante en la fila tras pedir nombre y documento); ahora remite a WhatsApp.
+  it.skip('revisión 2: "ya cancelé" no cancela; en la cola "mejor no" responde a la pregunta del bot', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, queued, paid] = await talk(c, 'tengo una deuda con ustedes', 'Ana Ruiz 43123456', 'ya cancelé');
     expect(queued.conversation.status).toBe('EN_ESPERA_ASESOR');
@@ -467,7 +494,8 @@ describe('coherencia del chat en vivo', () => {
     expect(ok.conversation.status).toBe('BOT_ACTIVO');
   });
 
-  it('revisión 3: en la cola "ya no me interesa" cancela; desistir con una pregunta cancela y la responde', async () => {
+  // Flujo anterior (el bot dejaba al visitante en la fila tras pedir nombre y documento); ahora remite a WhatsApp.
+  it.skip('revisión 3: en la cola "ya no me interesa" cancela; desistir con una pregunta cancela y la responde', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, , bye] = await talk(a, 'quiero un asesor', 'Juan Pérez 1020304050', 'ya no me interesa');
     expect(bye).toMatchObject({ conversation: { status: 'BOT_ACTIVO' } });
@@ -554,7 +582,7 @@ describe('coherencia del chat en vivo', () => {
 });
 
 describe('empresa con varias carteras', () => {
-  it('para pasar con un asesor solo pregunta la cartera: con ella pasa directo; si insiste sin darla, pasa al azar', async () => {
+  it('para pasar con un asesor solo pregunta la cartera: con ella remite directo a WhatsApp; si insiste sin darla, lo remite al azar', async () => {
     const G = await setupCompany(env, sup, { slug: 'coherencia-cartera', name: 'Cobranzas Cartera', origin: 'https://cartera.test', advisors: 1 });
     const flamingo = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo', aliases: ['almacenes flamingo'] });
     expect(flamingo.status).toBe(201);
@@ -563,14 +591,16 @@ describe('empresa con varias carteras', () => {
     const [ask, done] = await talk(a, 'quiero hablar con un asesor', 'es con almacenes flamingo');
     expect(ask.message).toMatch(/¿De qué cartera es tu consulta: .*Flamingo.*\? Si me la indicas, te paso directamente con un asesor de esa cartera\./);
     expect(ask.message).not.toMatch(/nombre|documento/i);
-    expect(done).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(done).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(done.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
     expect((await a.get('/conversation')).body.conversation.portfolio_id).toBe(flamingo.body.id);
     // Sin la cartera: primero se le avisa que pasará al azar; si insiste, pasa a la cola en una cartera de la lista.
     const b = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
     const [, warn, random] = await talk(b, 'quiero hablar con un asesor', 'no sé', 'pásame ya');
     expect(warn.type).toBe('answer');
     expect(warn.message).toMatch(/te paso directamente con un asesor de esa cartera; si no, te paso con un asesor de forma aleatoria/);
-    expect(random).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(random).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
+    expect(random.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
     expect(random.message).toMatch(/de forma aleatoria/);
     const portfolios = (await sup.get(`/companies/${G.companyId}/portfolios`)).body.items.map((p: any) => p.id);
     expect(portfolios).toContain((await b.get('/conversation')).body.conversation.portfolio_id);

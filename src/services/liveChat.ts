@@ -107,7 +107,7 @@ export async function botState(q: Queryable, companyId: string, conversationId: 
   let collectTexts: string[] = [];
   for (const r of rows) {
     // Cancelar, pasar a la cola, o que un asesor tome o devuelva el chat cierran la toma de datos: empieza de cero.
-    if (r.sender_type === 'SYSTEM' || r.kind === 'handoff_cancel') { handoffAsks = 0; stalledAsks = 0; waived = new Set(); collectTexts = []; continue; }
+    if (r.sender_type === 'SYSTEM' || r.kind === 'handoff_cancel' || r.kind === 'whatsapp') { handoffAsks = 0; stalledAsks = 0; waived = new Set(); collectTexts = []; continue; }
     collectTexts.push(r.content);
     if (r.kind === 'data_request' && r.field === 'handoff') {
       handoffAsks++;

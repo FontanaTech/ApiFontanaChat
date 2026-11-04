@@ -62,7 +62,7 @@ describe('frase de derivación del chat', () => {
     }
     expect(messages.size).toBeGreaterThan(3);
     expect([...messages].every((m) => /asesor/.test(m) && /WhatsApp/.test(m))).toBe(true);
-    expect([...wa]).toEqual(['Hola Empresa Lead. Quiero hablar con un asesor. ']); // preestablecido, sin modelo
+    expect([...wa]).toEqual(['Hola Empresa Lead. Quiero hablar con un asesor para solicitar información. ']); // preestablecido, sin modelo
     expect(env.llm.calls.length).toBe(2); // solo las dos preguntas anteriores usaron el modelo
   });
 });

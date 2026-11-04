@@ -2,6 +2,8 @@ import type { Db } from '../db';
 import type { Company } from '../models/companies';
 import type { PublicSession } from '../models/public';
 import { listPortfolios } from '../models/portfolios';
+import { HttpError } from '../utils/errors';
+import { createHandoff } from './handoff';
 import { joinText, normalize, tidy } from '../utils/text';
 import {
   answerChat, asksContact, companyFacts, companyName, companyNumberText, helpTexts, identityAgainText, identityText, isComplaint, NAMES_ADVISOR, offerAdvisor,
@@ -54,6 +56,9 @@ export interface LiveResponse {
   type: 'answer' | 'live';
   message: string;
   link?: ChatReply['link'];
+  /** Enlace de WhatsApp del asesor al que se remite al visitante (ya con el mensaje armado). */
+  waUrl?: string;
+  handoffId?: string;
   conversation: { id: string; status: string };
 }
 
@@ -184,7 +189,11 @@ const WAITING = [
   'Sigues en la fila. El asesor te escribirá por este mismo chat apenas tome tu conversación.',
 ];
 /** Pasa a la cola sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
-const RANDOM_QUEUE = 'Te paso con un asesor de forma aleatoria; tu solicitud quedó en espera y continuará contigo por este mismo chat. Si le indicas tu cartera, te transferirá a un asesor de esa cartera.';
+/** Se remite a un asesor por WhatsApp (el panel puede tomar el chat, pero el visitante no cuenta con eso). */
+const WA_REFERRAL = 'Te remito con un asesor por WhatsApp: toca el botón para escribirle.';
+/** Remite sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
+const RANDOM_QUEUE = 'Te remito con un asesor de forma aleatoria por WhatsApp: toca el botón para escribirle. Si me indicas tu cartera, te remito con un asesor de esa cartera.';
+const NO_ADVISOR_WA = 'En este momento no hay un asesor disponible por WhatsApp. Inténtalo de nuevo más tarde o consulta los canales de atención del sitio.';
 const SENSITIVE_START = [
   'Como es un tema personal, lo revisa mejor un asesor.',
   'Para revisar tu caso te comunico con un asesor.',
@@ -293,7 +302,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const portfolioNames = portfolios.map((p) => p.name);
   // Al pasar a la cola sin cartera: la única activa o la cartera por defecto (así la ven los asesores de esa cartera).
   // Con varias, si el visitante no dijo la suya, una al azar de la lista (así lo atiende algún asesor).
-  const queuePortfolioId = portfolios.length === 0 ? null : portfolios[Math.floor(Math.random() * portfolios.length)].id;
+  const queuePortfolio = portfolios.length === 0 ? null : portfolios[Math.floor(Math.random() * portfolios.length)];
   const active = portfolios.find((p) => p.id === conv.portfolio_id);
   const portfolioName = active?.name;
   const bot = await botState(db, company.id, conv.id);
@@ -362,14 +371,49 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
         ...(opts.waived?.length ? { waived: opts.waived.join(',') } : {}), ...(opts.offerPending ? { offer: 'pending' } : {}),
       }
       : {};
-    const saved = await finishBotTurn(db, company.id, conv.id, text, !!opts.escalate, metadata, { assignPortfolioId: opts.escalate ? queuePortfolioId : null });
+    if (opts.escalate) return referToWhatsapp(text);
+    const saved = await finishBotTurn(db, company.id, conv.id, text, false, metadata);
     if (saved.message) notify(company.id, 'chat_message', { conversationId: conv.id, messageId: saved.message.id, sender: saved.message.sender_type });
     const status = saved.conversation.status;
     if (status !== conv.status) notify(company.id, 'chat_status', { conversationId: conv.id, status });
     // Un asesor tomó el chat mientras el bot pensaba: su respuesta no se envía.
     if (status === 'TOMADO_POR_ASESOR') return { type: 'live', message: 'Tu mensaje fue enviado al asesor.', conversation: { id: conv.id, status } };
-    if (opts.escalate && status === 'EN_ESPERA_ASESOR') return { type: 'live', message: text, conversation: { id: conv.id, status } };
     return { type: 'answer', message: text, link: opts.link, conversation: { id: conv.id, status } };
+  };
+
+  /** Texto con que se remite a WhatsApp: si el visitante ya contó su consulta, el mensaje la lleva. */
+  const waText = () => (conv.subject ? `${WA_REFERRAL} El mensaje ya lleva tu consulta.` : WA_REFERRAL);
+  /**
+   * Remite al visitante con un asesor por WhatsApp (el número es el de un asesor de su cartera; sin cartera, de una al
+   * azar). El mensaje del enlace lleva lo que preguntó y, si no preguntó nada, uno base que pide la información. La
+   * conversación sigue abierta: quien administra el panel puede tomarla en cualquier momento, aunque el visitante no
+   * cuente con eso.
+   */
+  const referToWhatsapp = async (text: string): Promise<LiveResponse> => {
+    const chosen = active && !conv.portfolio_auto ? active : queuePortfolio;
+    let waUrl: string | undefined;
+    let handoffId: string | undefined;
+    let said = text;
+    try {
+      const r = await createHandoff(db, company, session, {
+        idempotencyKey: `chat-live-${chosen?.key ?? 'any'}`, portfolioKeyHint: chosen?.key,
+        name: conv.visitor_name ?? '', reason: conv.subject ?? '',
+      }, notify);
+      waUrl = r.handoff.wa_url;
+      handoffId = r.handoff.id;
+    } catch (e) {
+      if (!(e instanceof HttpError && e.code === 'no_advisor_available')) throw e;
+      said = NO_ADVISOR_WA;
+    }
+    // Sin cartera, queda en la que se eligió (marcada como del sistema) para que la vean los asesores de esa cartera.
+    if (!conv.portfolio_id && chosen) {
+      await db.query('UPDATE chat_sessions SET portfolio_id = $3, portfolio_auto = true WHERE id = $1 AND company_id = $2 AND portfolio_id IS NULL', [conv.id, company.id, chosen.id]);
+    }
+    const saved = await finishBotTurn(db, company.id, conv.id, said, false, { kind: 'whatsapp', ...(waUrl ? { waUrl, handoffId } : {}) });
+    if (saved.message) notify(company.id, 'chat_message', { conversationId: conv.id, messageId: saved.message.id, sender: 'BOT' });
+    const status = saved.conversation.status;
+    if (status === 'TOMADO_POR_ASESOR') return { type: 'live', message: 'Tu mensaje fue enviado al asesor.', conversation: { id: conv.id, status } };
+    return { type: 'answer', message: said, ...(waUrl ? { waUrl, handoffId } : {}), conversation: { id: conv.id, status } };
   };
 
   /**
@@ -509,7 +553,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
    */
   const escalate = (opening = '', noteMissing = true) => {
     // Sin la cartera (la empresa tiene varias) pasa con un asesor de una cartera elegida al azar.
-    const queued = missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.';
+    const queued = missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : waText();
     const thanks = !opening && progressed ? `Gracias${you}.` : '';
     return reply(joinText(opening, thanks, queued), { escalate: true });
   };
@@ -524,7 +568,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       return { type: 'live' as const, message: 'Tu mensaje fue enviado al asesor.', conversation: { id: conv.id, status: saved.conversation.status } };
     }
     return reply(
-      missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.',
+      missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : waText(),
       { escalate: true },
     );
   };
@@ -593,8 +637,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // "No entiendo", "¿cómo así?": no dijo que no; se le explica la oferta.
     if (isConfused(body.message)) {
       return reply(fresh([
-        'Te explico: puedo pasarte con un asesor por este mismo chat para que revise tu consulta contigo. ¿Quieres que lo haga?',
-        'Me refiero a que un asesor puede continuar contigo por este mismo chat. ¿Te comunico con uno?',
+        'Te explico: puedo remitirte con un asesor por WhatsApp para que revise tu consulta contigo. ¿Quieres que lo haga?',
+        'Me refiero a que un asesor puede atenderte por WhatsApp. ¿Te remito con uno?',
       ]), { kind: 'offer' });
     }
     // "Sí, no hay problema", "sí, pero no tengo la cédula a la mano": también aceptan.
@@ -783,7 +827,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     const sorry = isComplaint(body.message) || DISSATISFIED.test(n) ? `Lamento el inconveniente${you}.` : '';
     const opening = answer ? joinText(withoutTrailingQuestion(answer), 'Te comunico con un asesor.')
       : pending ? joinText(pending, NAMES_ADVISOR.test(pending) ? 'Te comunico con uno.' : 'Te comunico con un asesor, que te lo confirma.')
-        : waitAsk ? `¡Claro${you}! Te comunico con un asesor; te escribirá por este mismo chat apenas esté disponible.`
+        : waitAsk ? `¡Claro${you}! Te remito con un asesor por WhatsApp.`
           : sorry ? joinText(sorry, `Te comunico con ${another} asesor.`)
             : `¡Claro${you}! Te comunico con ${another} asesor.`;
     return collect('start', joinText(opening, notes), '', { options: startOptions });
@@ -792,7 +836,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // "Me llamaron del 604 607 4101, ¿es de ustedes?": se confirma el número antes de pedir los datos.
     const ours = await companyNumberText(db, company, body.message);
     // "No quiero que me llamen más, ya pagué": no pide un asesor; se le ofrece revisar su caso sin pedirle los datos.
-    if (negated) return reply(joinText(ours ?? '', offerAdvisor('Entiendo. Un asesor puede revisar tu caso por este mismo chat.')), { kind: 'offer' });
+    if (negated) return reply(joinText(ours ?? '', offerAdvisor('Entiendo. Un asesor puede revisar tu caso por WhatsApp.')), { kind: 'offer' });
     const named = userTurn.captured.includes('name') && !userTurn.replaced.includes('name') ? `Gracias, ${first}.` : '';
     return collect('start', joinText(ours, named, pick(SENSITIVE_START), notes), '', { options: startOptions });
   }
