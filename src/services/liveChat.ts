@@ -52,15 +52,12 @@ export const MAX_HANDOFF_DATA_REQUESTS_HARD = 4;
 export type { DataField };
 
 /**
- * Datos que aún faltan para pasar la conversación a un asesor: nombre, documento y la cartera, esta última solo si la
- * empresa tiene más de una activa (con una sola no hay nada que elegir: se asigna sola al pasar a la cola).
+ * Lo que falta para pasar la conversación a un asesor: solo la cartera, y solo si la empresa tiene más de una activa
+ * (con una sola no hay nada que elegir: se asigna sola al pasar a la cola). El nombre y el documento ya no se piden; si
+ * el visitante los da, se guardan para el asesor.
  */
 export function missingData(conv: Pick<LiveChatSession, 'visitor_name' | 'document' | 'portfolio_id'>, choosePortfolio: boolean): DataField[] {
-  const missing: DataField[] = [];
-  if (!conv.visitor_name) missing.push('name');
-  if (!conv.document) missing.push('document');
-  if (!conv.portfolio_id && choosePortfolio) missing.push('portfolio');
-  return missing;
+  return !conv.portfolio_id && choosePortfolio ? ['portfolio'] : [];
 }
 
 /** "tu nombre, tu número de documento y la cartera de tu consulta (A, B)". */

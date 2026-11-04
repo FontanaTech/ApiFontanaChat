@@ -102,7 +102,8 @@ describe('coherencia del chat en vivo', () => {
     expect(t2.message).not.toBe(t1.message);
   });
 
-  it('lo que el sitio no dice: ofrece un asesor; "no" se respeta y "sí" pide solo nombre y documento', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('lo que el sitio no dice: ofrece un asesor; "no" se respeta y "sí" pide solo nombre y documento', async () => {
     say('¿trabajan los sábados?', { intent: 'handoff', answer: 'Un asesor te confirmará el horario de atención.' });
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [offer, no, offer2, yes, name, doc] = await talk(c, '¿trabajan los sábados?', 'no gracias', '¿trabajan los sábados?', 'sí', 'Laura Pérez', 'cc 1.020.304.050');
@@ -128,7 +129,8 @@ describe('coherencia del chat en vivo', () => {
     expect(r.message).not.toMatch(/NIT/);
   });
 
-  it('un asunto personal pide los datos y reconoce la cédula con puntos y el nombre en la misma frase', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('un asunto personal pide los datos y reconoce la cédula con puntos y el nombre en la misma frase', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [ask, data] = await talk(c, 'tengo una deuda y quiero hacer un acuerdo de pago', 'me llamo Ana Gómez, cédula 43.123.456');
     expect(ask.message).toMatch(/¿me compartes tu nombre y tu número de documento\?$/);
@@ -143,7 +145,8 @@ describe('coherencia del chat en vivo', () => {
     expect(r.message).toMatch(/^Asesoría Legal: Acompañamiento jurídico/);
   });
 
-  it('cancelar la solicitud o negarse a dar datos se respeta', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('cancelar la solicitud o negarse a dar datos se respeta', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, cancel, after] = await talk(a, 'quiero hablar con un asesor', 'mejor no, ya no', '¿qué es la asesoría legal?');
     expect(cancel.message).toMatch(/no hay problema/);
@@ -155,7 +158,8 @@ describe('coherencia del chat en vivo', () => {
     expect(refuse.message).not.toMatch(/te pedirá los datos/);
   });
 
-  it('en espera explica la espera, agradece y no vuelve a pedir datos', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('en espera explica la espera, agradece y no vuelve a pedir datos', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [queued, wait, thanks] = await talk(c, 'Hola, soy Carlos Ruiz, mi cédula es 71234567 y quiero hablar con un asesor', '¿cuánto se demora?', 'gracias');
     expect(queued).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
@@ -165,7 +169,8 @@ describe('coherencia del chat en vivo', () => {
     for (const x of [wait, thanks]) expect(x.message).not.toMatch(/documento|cartera|nombre/i);
   });
 
-  it('un celular o un monto no se toman como cédula', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('un celular o un monto no se toman como cédula', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, phone, money, doc] = await talk(c, 'quiero hablar con un asesor', 'me llamo Sofía, mi celular es 3001234567', 'debo $1.500.000', 'mi cédula es 1.090.123.456');
     expect(phone.message).toBe('Gracias, Sofía. Para pasarte con el asesor solo me falta tu número de documento.');
@@ -175,7 +180,8 @@ describe('coherencia del chat en vivo', () => {
     expect((await c.get('/conversation')).body.conversation.document).toBe('1090123456');
   });
 
-  it('el tema que verá el asesor es la consulta real, no la frase de pedir asesor', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('el tema que verá el asesor es la consulta real, no la frase de pedir asesor', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     await talk(c, 'quiero hablar con un asesor');
     expect((await c.get('/conversation')).body.conversation.subject).toBe('');
@@ -205,7 +211,8 @@ describe('coherencia del chat en vivo', () => {
     expect((await c.get('/conversation')).body.conversation.document).toBeNull();
   });
 
-  it('montos y celulares mientras pide los datos no son la cédula; el celular se agradece como contacto', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('montos y celulares mientras pide los datos no son la cédula; el celular se agradece como contacto', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, money, phone] = await talk(c, 'me estan cobrando 850.000 de una deuda que ya pague', 'debo 2.300.000', 'mi wsp 3104567890');
     expect(money.message).not.toMatch(/ya tengo tu número de documento/);
@@ -213,7 +220,8 @@ describe('coherencia del chat en vivo', () => {
     expect((await c.get('/conversation')).body.conversation.document).toBeNull();
   });
 
-  it('si el último dato llega con una pregunta, la responde y el aviso de la cola va aparte (sin agradecer dos veces)', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('si el último dato llega con una pregunta, la responde y el aviso de la cola va aparte (sin agradecer dos veces)', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, name, last] = await talk(c, 'quiero hablar con un asesor', 'Laura Gómez', 'mi cédula es 1020304050, ¿cuál es el correo?');
     expect(name.message).toBe('Gracias, Laura. Para pasarte con el asesor solo me falta tu número de documento.');
@@ -226,7 +234,8 @@ describe('coherencia del chat en vivo', () => {
     expect(`${bot.content} ${system.content}`.match(/Gracias/g)).toHaveLength(1);
   });
 
-  it('mientras pide los datos: "un momento" espera, "¿para qué?" se explica y "no" pasa sin datos', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('mientras pide los datos: "un momento" espera, "¿para qué?" se explica y "no" pasa sin datos', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, hold, why, no] = await talk(c, 'necesito hablar con un asesor', 'un momento', '¿para qué necesitan mis datos?', 'no');
     expect(hold.message).toMatch(/aquí te espero/);
@@ -279,7 +288,8 @@ describe('coherencia del chat en vivo', () => {
     for (const m of msgs.slice(queuedAt + 1)) expect(m.content).not.toMatch(/me compartes|compárteme|me falta/);
   });
 
-  it('revisión 2: nombres poco comunes y con tratamiento se guardan; términos y negativas no', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: nombres poco comunes y con tratamiento se guardan; términos y negativas no', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, wilmar, doc] = await talk(c, 'quiero hablar con un asesor', 'wilmar gomez', '1020304050');
     expect(wilmar.message).toBe('Gracias, Wilmar. Para pasarte con el asesor solo me falta tu número de documento.');
@@ -301,7 +311,8 @@ describe('coherencia del chat en vivo', () => {
     expect(no.message).toBe('Está bien, no hay problema. ¿En qué te puedo ayudar?');
   });
 
-  it('revisión 2: "¿eres una persona real?" se presenta; pedidos de asesor con otras palabras inician la toma de datos', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: "¿eres una persona real?" se presenta; pedidos de asesor con otras palabras inician la toma de datos', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [who] = await talk(c, 'eres una persona real?');
     expect(who.message).toMatch(/^Soy el asistente virtual de Cobranzas Demo\./);
@@ -326,7 +337,8 @@ describe('coherencia del chat en vivo', () => {
     expect(no.message).toMatch(/El asesor (te escribirá|continuará)/);
   });
 
-  it('revisión 2: desistir con una pregunta suelta la toma de datos y la responde; despedirse no lo pasa a la cola', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: desistir con una pregunta suelta la toma de datos y la responde; despedirse no lo pasa a la cola', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, forget, thanks] = await talk(c, 'quiero hablar con un asesor', 'olvídalo, ¿cuál es el correo?', 'gracias');
     expect(forget.message).toMatch(/^Listo, no hay problema\. Correo de contacto: gerencia@demo\.test/);
@@ -352,7 +364,8 @@ describe('coherencia del chat en vivo', () => {
     expect(neg.message).not.toMatch(/comunique con un asesor/);
   });
 
-  it('revisión 2: saludo, nombre y respuesta sin repetir; quejas y ciudades sin sede sin "esa respuesta"', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: saludo, nombre y respuesta sin repetir; quejas y ciudades sin sede sin "esa respuesta"', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [greet] = await talk(c, 'hola, me llamo Juan y quiero saber qué servicios ofrecen');
     expect(greet.message).toMatch(/^¡Hola, Juan! Mucho gusto\. Nuestros servicios: /);
@@ -366,7 +379,8 @@ describe('coherencia del chat en vivo', () => {
     expect(called.message).toMatch(/^Sí, el 604 607 4101 es la línea de atención publicada en nuestro sitio\. .*¿me compartes tu nombre y tu número de documento\?$/);
   });
 
-  it('revisión 2: mientras pide los datos, un "sí" o una palabra suelta no reciben "Eso te lo resolverá el asesor"', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: mientras pide los datos, un "sí" o una palabra suelta no reciben "Eso te lo resolverá el asesor"', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, yes, laugh] = await talk(c, 'quiero un asesor', 'si', 'jajaja');
     expect(yes.message).toBe('Perfecto. Para pasarte con el asesor solo me faltan tu nombre y tu número de documento.');
@@ -377,7 +391,8 @@ describe('coherencia del chat en vivo', () => {
     expect((await d.get('/conversation')).body.conversation.subject).toBe('');
   });
 
-  it('revisión 2: en la cola los datos repetidos no reciben el mismo texto y un nombre claro se guarda', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: en la cola los datos repetidos no reciben el mismo texto y un nombre claro se guarda', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, refused, , named, again1, again2] = await talk(c, 'necesito hablar con un asesor', 'prefiero no dar mis datos', 'ya',
       'bueno, Juan Pérez', '1020304050', '1020304050');
@@ -387,7 +402,8 @@ describe('coherencia del chat en vivo', () => {
     expect((await c.get('/conversation')).body.conversation).toMatchObject({ visitor_name: 'Juan Pérez', document: '1020304050' });
   });
 
-  it('revisión 3: al pedir los datos, la primera palabra de una frase, una condición o una marca no es el nombre', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: al pedir los datos, la primera palabra de una frase, una condición o una marca no es el nombre', async () => {
     for (const m of ['cuentame un chiste', 'mira lo que pasa es que me llegó un mensaje', 'permítame un momento', 'soy viuda y no puedo pagar',
       'es con Sodimac', 'domingo te los mando', 'Comcel']) {
       const c = await publicClient(env, 'coherencia', ORIGIN);
@@ -401,7 +417,8 @@ describe('coherencia del chat en vivo', () => {
     expect(hold.message).toMatch(/aquí te espero/);
   });
 
-  it('revisión 3: el nombre después de "mis datos son…", junto a una negativa o antes del pasaporte se guarda', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: el nombre después de "mis datos son…", junto a una negativa o antes del pasaporte se guarda', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, queued] = await talk(a, 'quiero hablar con un asesor', 'mis datos son Juan Pérez cc 1020304050');
     expect(queued.conversation.status).toBe('EN_ESPERA_ASESOR');
@@ -428,14 +445,16 @@ describe('coherencia del chat en vivo', () => {
     expect(onlyName.message).toBe('Gracias, ya tengo tu número de documento. Para pasarte con el asesor solo me falta tu nombre.');
   });
 
-  it('revisión 3: corregir el nombre con "no es X, es Y" lo cambia', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: corregir el nombre con "no es X, es Y" lo cambia', async () => {
     const c = await publicClient(env, 'coherencia', ORIGIN);
     const [, , fixed] = await talk(c, 'quiero un asesor', 'Ana Ruiz', 'no es Ana Ruiz, es Ana Rojas');
     expect(fixed.message).toBe('Listo, Ana, corregí tu nombre. Para pasarte con el asesor solo me falta tu número de documento.');
     expect((await c.get('/conversation')).body.conversation).toMatchObject({ visitor_name: 'Ana Rojas', subject: '' });
   });
 
-  it('revisión 3: una pregunta sin signo junto a un dato se responde; "no, mejor dime…" suelta la toma y responde', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: una pregunta sin signo junto a un dato se responde; "no, mejor dime…" suelta la toma y responde', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     await talk(a, 'quiero hablar con un asesor', 'Juan Pérez', '1020304050 y cual es el correo');
     const msgs = (await a.get('/conversation')).body.messages;
@@ -460,7 +479,8 @@ describe('coherencia del chat en vivo', () => {
     expect(both.message).toBe('Listo, Juan, cancelé tu solicitud de asesor. Correo de contacto: gerencia@demo.test. Si más adelante necesitas un asesor, solo dímelo.');
   });
 
-  it('revisión 3: pedir un asesor con otra pregunta la responde; "no quiero que me llamen" no es pedir un asesor', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: pedir un asesor con otra pregunta la responde; "no quiero que me llamen" no es pedir un asesor', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [both] = await talk(a, 'quiero un asesor, pero primero dime el correo');
     expect(both.message).toBe('Correo de contacto: gerencia@demo.test. Te comunico con un asesor. Para que te atienda desde el primer mensaje, ¿me compartes tu nombre y tu número de documento?');
@@ -534,7 +554,30 @@ describe('coherencia del chat en vivo', () => {
 });
 
 describe('empresa con varias carteras', () => {
-  it('pregunta la cartera con la lista y la reconoce por su alias', async () => {
+  it('para pasar con un asesor solo pregunta la cartera: con ella pasa directo; si insiste sin darla, pasa al azar', async () => {
+    const G = await setupCompany(env, sup, { slug: 'coherencia-cartera', name: 'Cobranzas Cartera', origin: 'https://cartera.test', advisors: 1 });
+    const flamingo = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo', aliases: ['almacenes flamingo'] });
+    expect(flamingo.status).toBe(201);
+    // Con la cartera: pasa directo a la cola de esa cartera, sin pedir nombre ni documento.
+    const a = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
+    const [ask, done] = await talk(a, 'quiero hablar con un asesor', 'es con almacenes flamingo');
+    expect(ask.message).toMatch(/¿De qué cartera es tu consulta: .*Flamingo.*\? Si me la indicas, te paso directamente con un asesor de esa cartera\./);
+    expect(ask.message).not.toMatch(/nombre|documento/i);
+    expect(done).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect((await a.get('/conversation')).body.conversation.portfolio_id).toBe(flamingo.body.id);
+    // Sin la cartera: primero se le avisa que pasará al azar; si insiste, pasa a la cola en una cartera de la lista.
+    const b = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
+    const [, warn, random] = await talk(b, 'quiero hablar con un asesor', 'no sé', 'pásame ya');
+    expect(warn.type).toBe('answer');
+    expect(warn.message).toMatch(/te paso directamente con un asesor de esa cartera; si no, te paso con un asesor de forma aleatoria/);
+    expect(random).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
+    expect(random.message).toMatch(/de forma aleatoria/);
+    const portfolios = (await sup.get(`/companies/${G.companyId}/portfolios`)).body.items.map((p: any) => p.id);
+    expect(portfolios).toContain((await b.get('/conversation')).body.conversation.portfolio_id);
+  });
+
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('pregunta la cartera con la lista y la reconoce por su alias', async () => {
     const G = await setupCompany(env, sup, { slug: 'coherencia-dos', name: 'Cobranzas Dos', origin: 'https://dos.test', advisors: 1 });
     const flamingo = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo', aliases: ['almacenes flamingo'] });
     expect(flamingo.status).toBe(201);
@@ -556,7 +599,8 @@ describe('empresa con varias carteras', () => {
     expect((await d.get('/conversation')).body.conversation.portfolio_id).toBeNull();
   });
 
-  it('revisión 2: "un asesor de X" anota la cartera; sin cartera pasa a la cola en la cartera por defecto; en la cola se puede dar después', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 2: "un asesor de X" anota la cartera; sin cartera pasa a la cola en la cartera por defecto; en la cola se puede dar después', async () => {
     const H = await setupCompany(env, sup, { slug: 'coherencia-tres', name: 'Cobranzas Tres', origin: 'https://tres.test', advisors: 1 });
     const flamingo = await sup.post(`/companies/${H.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo' });
     const general = (await sup.get(`/companies/${H.companyId}/portfolios`)).body.items.find((p: any) => p.key === 'general');
@@ -580,7 +624,8 @@ describe('empresa con varias carteras', () => {
     expect((await e.get('/conversation')).body.conversation.portfolio_id).toBe(flamingo.body.id);
   });
 
-  it('revisión 3: la cartera por defecto se reemplaza con la que diga después; la negada no cuenta; un "claro" inicial es un sí', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('revisión 3: la cartera por defecto se reemplaza con la que diga después; la negada no cuenta; un "claro" inicial es un sí', async () => {
     const H = await setupCompany(env, sup, { slug: 'coherencia-cuatro', name: 'Cobranzas Cuatro', origin: 'https://cuatro.test', advisors: 1 });
     const flamingo = await sup.post(`/companies/${H.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo' });
     const offcorss = await sup.post(`/companies/${H.companyId}/portfolios`, { key: 'offcorss', name: 'Offcorss' });
@@ -665,7 +710,8 @@ describe('contenido del sitio', () => {
 describe('revisión 4: conversaciones', () => {
   const conv = async (c: Awaited<ReturnType<typeof publicClient>>) => (await c.get('/conversation')).body;
 
-  it('negar un nombre no lo guarda; negar el guardado lo borra y se vuelve a pedir', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('negar un nombre no lo guarda; negar el guardado lo borra y se vuelve a pedir', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [r] = await talk(a, 'Me llaman cobrando a Juan Pérez, pero yo no soy Juan Pérez');
     expect(r.message).toMatch(/¿me compartes tu nombre y tu número de documento\?$/);
@@ -679,7 +725,8 @@ describe('revisión 4: conversaciones', () => {
     expect(fixed.message).toMatch(/^Gracias, Juan\./);
   });
 
-  it('"la cédula correcta es…" corrige el documento sin tomar "Correcta" como nombre; "Con Pedro" es el nombre', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('"la cédula correcta es…" corrige el documento sin tomar "Correcta" como nombre; "Con Pedro" es el nombre', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, , fix] = await talk(a, 'quiero hablar con un asesor', '1020304050', 'disculpa, la cedula correcta es 1020304051');
     expect(fix.message).toBe('Listo, corregí tu número de documento. Para pasarte con el asesor solo me falta tu nombre.');
@@ -690,7 +737,8 @@ describe('revisión 4: conversaciones', () => {
     expect(named.message).toBe('Gracias, Pedro. Para pasarte con el asesor solo me falta tu número de documento.');
   });
 
-  it('una queja sobre un asesor no es negarlo; "un asesor, no un robot" lo pide', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('una queja sobre un asesor no es negarlo; "un asesor, no un robot" lo pide', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [r] = await talk(a, 'el asesor no me contestó ayer');
     expect(r.message).toMatch(/^Lamento (el inconveniente|lo ocurrido)/);
@@ -700,7 +748,8 @@ describe('revisión 4: conversaciones', () => {
     expect(h.message).toMatch(/^¡Claro! Te comunico con un asesor\. Para que te atienda desde el primer mensaje/);
   });
 
-  it('en la cola, "no quiero nada más" responde a "¿algo más?" sin cancelar; preguntar la espera al completar los datos no se contradice', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('en la cola, "no quiero nada más" responde a "¿algo más?" sin cancelar; preguntar la espera al completar los datos no se contradice', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, , more, none] = await talk(a, 'quiero un asesor', 'Ana Ruiz 43123456', '¿cuánto debo?', 'no quiero nada más, gracias');
     expect(more.message).toMatch(/¿te ayudo con algo más\?|¿Te ayudo con algo más mientras tanto\?/);
@@ -715,7 +764,8 @@ describe('revisión 4: conversaciones', () => {
     expect(bot.content).toMatch(/el asesor te escribirá por este mismo chat/);
   });
 
-  it('al pedir los datos: preguntas sin signo, imperativos y desistir con "y" se responden', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('al pedir los datos: preguntas sin signo, imperativos y desistir con "y" se responden', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [, where] = await talk(a, 'quiero un asesor', '1020304050 dónde quedan');
     expect(where.message).toContain('Carrera 46 # 50-63');
@@ -735,7 +785,8 @@ describe('revisión 4: conversaciones', () => {
     expect(doc.conversation.status).toBe('BOT_ACTIVO');
   });
 
-  it('pedir un asesor o cancelar con una pregunta sin respuesta publicada no la ignora', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('pedir un asesor o cancelar con una pregunta sin respuesta publicada no la ignora', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     const [r] = await talk(a, 'quiero un asesor, pero antes dime el horario');
     expect(r.message).toMatch(/^El horario de atención no aparece publicado en el sitio\..*Te comunico con un asesor/);
@@ -787,7 +838,8 @@ describe('revisión 4: conversaciones', () => {
     expect(g.message).toMatch(/^¡Hola! Gestionamos la recuperación de cartera, la asesoría legal y el call center\./);
   });
 
-  it('un nombre suelto raro guardado se reemplaza con uno completo; "de parte de Pedro Pérez" es el nombre', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('un nombre suelto raro guardado se reemplaza con uno completo; "de parte de Pedro Pérez" es el nombre', async () => {
     const a = await publicClient(env, 'coherencia', ORIGIN);
     await talk(a, '¿qué servicios ofrecen?', 'Xyzzo');
     expect((await conv(a)).conversation.visitor_name).toBe('Xyzzo');
@@ -801,7 +853,8 @@ describe('revisión 4: conversaciones', () => {
     expect((await conv(b)).conversation.subject).toBe('');
   });
 
-  it('varias carteras: el "claro" de acuse, "claro, general", "no, es X", dos a la vez, una negada y una ajena', async () => {
+  // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.
+  it.skip('varias carteras: el "claro" de acuse, "claro, general", "no, es X", dos a la vez, una negada y una ajena', async () => {
     const H = await setupCompany(env, sup, { slug: 'coherencia-seis', name: 'Cobranzas Seis', origin: 'https://seis.test', advisors: 1 });
     const claro = await sup.post(`/companies/${H.companyId}/portfolios`, { key: 'claro', name: 'Claro' });
     const flamingo = await sup.post(`/companies/${H.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo' });

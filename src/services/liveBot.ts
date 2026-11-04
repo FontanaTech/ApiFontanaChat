@@ -183,6 +183,8 @@ const WAITING = [
   'Tu solicitud sigue en espera. En cuanto un asesor se libere, continuará contigo por este mismo chat.',
   'Sigues en la fila. El asesor te escribirá por este mismo chat apenas tome tu conversación.',
 ];
+/** Pasa a la cola sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
+const RANDOM_QUEUE = 'Te paso con un asesor de forma aleatoria; tu solicitud quedó en espera y continuará contigo por este mismo chat. Si le indicas tu cartera, te transferirá a un asesor de esa cartera.';
 const SENSITIVE_START = [
   'Como es un tema personal, lo revisa mejor un asesor.',
   'Para revisar tu caso te comunico con un asesor.',
@@ -226,7 +228,7 @@ const NOT_ONLY_THANKS = /\b(contratar|cotizar|cotizacion|empresa|negocio|deuda|d
 /** "Es la cédula de mi esposa", "es para mi mamá": habla de sus datos, no nombra una entidad. */
 const ABOUT_DATA = /\b(cedula|documento|numero|nombre|mama|papa|esposa|esposo|hijo|hija|hermano|hermana|familiar)\b/;
 /** Respuestas a quien pregunta por la espera mientras se le piden los datos. */
-const WAIT_COLLECTING = 'En cuanto me compartas los datos pasas a la fila de atención, y el asesor te escribirá por este mismo chat apenas esté disponible.';
+const WAIT_COLLECTING = 'En cuanto me indiques tu cartera pasas a la fila de atención, y el asesor te escribirá por este mismo chat apenas esté disponible.';
 /** Lo mismo cuando ese mensaje completó los datos (pasa a la cola ahora). */
 const WAIT_DONE = 'Ya pasas a la fila de atención: el asesor te escribirá por este mismo chat apenas esté disponible.';
 /** "General, Claro u Offcorss", "Offcorss o Flamingo". */
@@ -290,7 +292,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const portfolios = await listPortfolios(db, company.id, true);
   const portfolioNames = portfolios.map((p) => p.name);
   // Al pasar a la cola sin cartera: la única activa o la cartera por defecto (así la ven los asesores de esa cartera).
-  const queuePortfolioId = (portfolios.length === 1 ? portfolios[0].id : null) ?? portfolios.find((p) => p.is_default)?.id ?? null;
+  // Con varias, si el visitante no dijo la suya, una al azar de la lista (así lo atiende algún asesor).
+  const queuePortfolioId = portfolios.length === 0 ? null : portfolios[Math.floor(Math.random() * portfolios.length)].id;
   const active = portfolios.find((p) => p.id === conv.portfolio_id);
   const portfolioName = active?.name;
   const bot = await botState(db, company.id, conv.id);
@@ -505,9 +508,9 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
    * agradece solo si este mensaje trajo datos.
    */
   const escalate = (opening = '', noteMissing = true) => {
-    const done = missing.length === 0;
-    const queued = `Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat${!done && noteMissing ? ' y te pedirá los datos que falten' : ''}.`;
-    const thanks = done ? (opening ? 'Ya tengo tus datos.' : `Gracias${you}. Ya tengo tus datos.`) : !opening && progressed ? `Gracias${you}.` : '';
+    // Sin la cartera (la empresa tiene varias) pasa con un asesor de una cartera elegida al azar.
+    const queued = missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.';
+    const thanks = !opening && progressed ? `Gracias${you}.` : '';
     return reply(joinText(opening, thanks, queued), { escalate: true });
   };
   /**
@@ -520,9 +523,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     if (saved.conversation.status === 'TOMADO_POR_ASESOR') {
       return { type: 'live' as const, message: 'Tu mensaje fue enviado al asesor.', conversation: { id: conv.id, status: saved.conversation.status } };
     }
-    const done = missing.length === 0;
     return reply(
-      `Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat${!done && noteMissing ? ' y te pedirá los datos que falten' : ''}.`,
+      missing.includes('portfolio') && noteMissing ? RANDOM_QUEUE : 'Tu solicitud quedó en espera de un asesor, que continuará por este mismo chat.',
       { escalate: true },
     );
   };
@@ -545,10 +547,10 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   })();
 
   /**
-   * Pide los datos que faltan para pasar con el asesor. `opening`: lo que se responde antes (el motivo o la respuesta
-   * a una pregunta); `ack`: el agradecimiento por los datos de este mensaje. Mientras el visitante siga entregando
-   * datos se le pide lo que falte; si deja de darlos tras MAX_HANDOFF_DATA_REQUESTS pedidos, pasa igual a la cola
-   * (el asesor los pedirá).
+   * Para pasar con un asesor solo se pregunta la cartera (si la empresa tiene varias): con ella pasa directo a un asesor
+   * de esa cartera. Si no la da, se le avisa que pasará con uno al azar; si insiste (tras MAX_HANDOFF_DATA_REQUESTS
+   * pedidos sin respuesta), pasa a la cola en una cartera elegida al azar. `opening`: lo que se responde antes (el motivo
+   * o la respuesta a una pregunta); `ack`: el agradecimiento por lo que trajo este mensaje.
    */
   const collect = (mode: 'start' | 'continue' | 'remind', opening = '', ack = handoffAck, opts: { waive?: DataField[]; options?: string[] } = {}) => {
     const need = missing.filter((f) => !opts.waive?.includes(f));
@@ -556,18 +558,16 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     if (need.length === 0 || stalled || bot.handoffAsks >= MAX_HANDOFF_DATA_REQUESTS_HARD) {
       // Lo que se le acababa de responder va aparte del aviso de la cola.
       if (mode === 'remind' && opening) return answerThenQueue(joinText(ack, opening));
-      return escalate(opening);
+      return escalate(joinText(ack, opening));
     }
     // Si ya nombró entre cuáles carteras duda ("tengo deuda con Claro y con Flamingo"), se le pregunta entre esas.
-    const list = dataList(need, opts.options ?? remembered ?? portfolioNames);
+    const names = orList(opts.options ?? remembered ?? portfolioNames);
     const lead = joinText(ack, opening);
-    // Si la frase anterior ya nombra al asesor, no se repite la palabra: "…el asesor. Para pasarte con él, …".
-    const withAdvisor = /\basesora(?![\p{L}])/iu.test(lead) ? 'Para pasarte con ella' : /\basesor(?![\p{L}])/iu.test(lead) ? 'Para pasarte con él' : 'Para pasarte con el asesor';
     const text = mode === 'start'
-      ? joinText(lead, `Para que te atienda desde el primer mensaje, ¿me compartes ${list}?`)
+      ? joinText(lead, `¿De qué cartera es tu consulta: ${names}? Si me la indicas, te paso directamente con un asesor de esa cartera.`)
       : mode === 'continue'
-        ? joinText(lead, `${withAdvisor} solo me ${need.length > 1 ? 'faltan' : 'falta'} ${list}.`)
-        : joinText(lead, `${withAdvisor}, compárteme ${list}.`);
+        ? joinText(lead, `Para pasarte directamente con un asesor de tu cartera, dime cuál es: ${names}.`)
+        : joinText(lead, `Si me indicas la cartera de tu consulta (${names}), te paso directamente con un asesor de esa cartera; si no, te paso con un asesor de forma aleatoria.`);
     return reply(text, { kind: 'data_request', field: 'handoff', waived: opts.waive });
   };
 
@@ -635,7 +635,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // "No me llamo Pedro": se borró el nombre y se pide de nuevo.
     if (userTurn.cleared.includes('name')) return collect('remind', 'Disculpa la confusión.');
     // "¿Y si no tengo cédula?", "¿sirve la tarjeta de identidad?": se explica qué documento sirve (no es negarse).
-    if (asksWhichDocument(body.message) && !userTurn.captured.includes('document')) return collect('remind', WHICH_DOCUMENT);
+    if (asksWhichDocument(body.message) && missing.includes('document') && !userTurn.captured.includes('document')) return collect('remind', WHICH_DOCUMENT);
     // "Un momento, ya te la paso: 43123456" trajo el dato: se toma en vez de esperar. "Luego te paso la cédula", "mañana te
     // escribo con los datos": se le espera.
     if (isHold(body.message) && !progressed) {
@@ -648,7 +648,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       const onlyPortfolio = missing.length === 1 && missing[0] === 'portfolio';
       return collect('remind', onlyPortfolio
         ? 'La cartera es la empresa o marca con la que tienes tu consulta. Si no estás seguro, dímelo y el asesor la confirma contigo.'
-        : 'Te los pido para que el asesor identifique tu caso y no tengas que repetirlos. Si prefieres no darlos, dímelo y te paso así.');
+        : 'La cartera es la empresa o marca con la que tienes tu consulta.');
     }
     // "Ninguna de las dos" a "¿Tu consulta es de Flamingo o de Offcorss?": niega las que el bot ofreció (no dice que su
     // cartera no sea de la empresa).
@@ -679,20 +679,23 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       return collect('remind', 'Entiendo, no hay problema: el asesor confirma la cartera contigo.', handoffAck, { waive: ['portfolio'] });
     }
     // "No tengo cédula, tengo pasaporte AB123456": negó un dato que igual entregó; se sigue con lo que falta.
+    // "No sé", "cualquiera", "no te la digo" sin haberle avisado aún: se le explica que con su cartera pasa directo y que,
+    // si no, lo pasará con un asesor al azar. Si vuelve a insistir, pasa al azar.
+    if (refused && missing.includes('portfolio') && bot.handoffAsks < MAX_HANDOFF_DATA_REQUESTS) return collect('remind', 'Entiendo.');
     if (refused && !(progressed && missing.length > 0 && refused !== 'all' && !refused.some((f) => missing.includes(f)))) {
       // "No quiero dar mi cédula, solo dime el correo": pasa sin los datos y se responde la pregunta.
       const answer = refuseQuestion(body.message) ? await answerText() : null;
-      if (answer) return answerThenQueue(joinText(handoffAck, 'Entiendo, no hay problema.', answer), false);
-      return escalate(joinText(handoffAck, 'Entiendo, no hay problema.'), false);
+      if (answer) return answerThenQueue(joinText(handoffAck, 'Entiendo, no hay problema.', answer));
+      return escalate(joinText(handoffAck, 'Entiendo, no hay problema.'));
     }
     if (isWhyData(body.message)) {
-      return collect('remind', 'Te los pido solo para que el asesor identifique tu caso y no tengas que repetirlos. Si prefieres no darlos, dímelo y te paso así.');
+      return collect('remind', 'Te pregunto la cartera para pasarte directamente con un asesor que lleve tu caso.');
     }
     // Con los datos de este mensaje ya completos pasa a la cola: no se le dice "en cuanto me compartas los datos".
     if (isWaitQuestion(body.message)) return collect('remind', missing.length === 0 ? WAIT_DONE : WAIT_COLLECTING);
     // "Quiero preguntar otra cosa": se le invita a preguntar, sin contarlo como otro pedido de datos.
     if (announcesQuestion(body.message)) {
-      return reply(`Claro, dime qué quieres preguntar. Cuando quieras, me compartes ${dataList(missing, remembered ?? portfolioNames)} para pasarte con el asesor.`, { kind: 'hold', field: 'handoff' });
+      return reply(`Claro, dime qué quieres preguntar. Cuando quieras, me indicas la cartera de tu consulta (${orList(remembered ?? portfolioNames)}) para pasarte con el asesor.`, { kind: 'hold', field: 'handoff' });
     }
     // Nombró carteras de la empresa pero no cuál es la suya ("Offcorss y Flamingo", "tengo deudas con Flamingo y
     // Offcorss", "no es Flamingo", "ni Flamingo ni Offcorss"): se le pregunta entre esas (o entre las demás), sin decir
@@ -732,8 +735,8 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // "Gracias", "ok": se le recuerda con amabilidad, sin contarlo como un pedido más.
     if ((intent === 'thanks' || answerTo === 'closing') && missing.length > 0) {
       return reply(fresh([
-        `Con gusto${you}. Cuando quieras, compárteme ${dataList(missing, remembered ?? portfolioNames)} para pasarte con el asesor.`,
-        `Aquí sigo${you}. Para pasarte con el asesor solo necesito ${dataList(missing, remembered ?? portfolioNames)}.`,
+        `Con gusto${you}. Cuando quieras, dime la cartera de tu consulta (${orList(remembered ?? portfolioNames)}) para pasarte con el asesor.`,
+        `Aquí sigo${you}. Para pasarte con el asesor solo necesito la cartera de tu consulta: ${orList(remembered ?? portfolioNames)}.`,
       ]), { kind: 'hold', field: 'handoff' });
     }
     if (intent === 'other') {

@@ -34,7 +34,7 @@ describe('toma de control del chatbot', () => {
     // sin preguntar una cartera que no hay que elegir.
     const human = await visitor.post('/chat', { message: 'Quiero hablar con un asesor', live: true });
     expect(human.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
-    expect(human.body.message).toMatch(/Ya tengo tus datos/);
+    expect(human.body.message).toMatch(/Tu solicitud quedó en espera/);
     expect(human.body.message).not.toMatch(/cartera/i);
     conversationId = human.body.conversation.id;
     const snapshot = await visitor.get('/conversation');
@@ -206,19 +206,12 @@ describe('continuidad al pedir los datos', () => {
     expect(snap.body.conversation).toMatchObject({ visitor_name: 'Juan', document: '1002003004', status: 'BOT_ACTIVO' });
   });
 
-  it('al pedir un asesor mantiene el hilo: agradece lo recibido y solo pide lo que falta', async () => {
+  it('con una sola cartera, pedir un asesor pasa directo a la cola sin pedir nombre ni documento', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
     const ask = await guest.post('/chat', { message: 'quiero hablar con un asesor', live: true });
+    expect(ask.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
     expect(ask.body.message).toMatch(/Te comunico con un asesor/);
-    const partial = await guest.post('/chat', { message: 'Juan Pérez', live: true });
-    expect(partial.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
-    expect(partial.body.message).toMatch(/^Gracias, Juan/);
-    expect(partial.body.message).not.toMatch(/Te comunico/);
-    expect(partial.body.message).not.toMatch(/tu nombre/i);
-    expect(partial.body.message).toMatch(/documento/i);
-    const done = await guest.post('/chat', { message: '2003004005 general', live: true });
-    expect(done.body).toMatchObject({ type: 'live', conversation: { status: 'EN_ESPERA_ASESOR' } });
-    expect(done.body.message).toMatch(/^Gracias, Juan\./);
+    expect(ask.body.message).not.toMatch(/nombre|documento|cartera/i);
   });
 });
 
