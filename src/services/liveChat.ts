@@ -4,7 +4,7 @@ import type { PublicSession } from '../models/public';
 import type { Db, Queryable } from '../db';
 import { conflict, forbidden, notFound } from '../utils/errors';
 import { normalize } from '../utils/text';
-import { ADVISOR_NEGATED, analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isSensitive, isWaitQuestion, isWhyData, mentionsCase, topicText, withoutQuestionTag, yesNo } from './intents';
+import { acceptsOffer, ADVISOR_NEGATED, analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isSensitive, isWaitQuestion, isWhyData, mentionsCase, topicText, withoutQuestionTag, yesNo } from './intents';
 import { FIRST_NAMES, PLACES } from './lexicon';
 import { deniedName, extractVisitorData, namedPortfolios, offeredPortfolios, type CaptureContext, type DataField, type Extracted } from './visitorData';
 
@@ -322,7 +322,7 @@ export async function startUserTurn(
     const topical = topic.split(' ').filter((w) => w.length >= 3).length >= 2 && rest.length > 0 && !dataReply && !collectingReply
       && (withBot ? ['other', 'sensitive', 'human'].includes(intent) || !!casePart : intent === 'sensitive')
       && !isCancel(message) && !isRefuse(message) && !isHold(message) && !isWaitQuestion(message) && !isWhyData(message) && yesNo(message) === null
-      && !(x.correction && hadData) && !deniesName;
+      && !(x.correction && hadData) && !deniesName && !(asked === 'offer' && acceptsOffer(message) && !mentionsCase(nm));
     // "No me pases con ningún asesor, solo dime el correo": el tema es lo que pide, sin la negativa.
     let subject = !current.subject && topical ? subjectText(casePart ?? (negated ? withoutAdvisorRefusal(message) : message), x).slice(0, 300) : current.subject;
     // "Necesito un paz y salvo, Juan Pérez" dicho antes de que se reconociera su nombre: al guardarlo, sale del asunto.
