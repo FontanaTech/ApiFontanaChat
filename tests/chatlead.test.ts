@@ -38,7 +38,8 @@ describe('frase de derivación del chat', () => {
     env.llm.impl = async () => JSON.stringify({ intent: 'handoff', answer: 'Los costos del plan premium los confirma mejor un asesor' });
     const r = await ask('¿Cuánto cuesta el plan premium?');
     expect(r.type).toBe('handoff_offer');
-    expect(r.message).toMatch(/^Los costos del plan premium los confirma mejor un asesor\. .*asesor.*WhatsApp/);
+    expect(r.message).toMatch(/^Los costos del plan premium los confirma mejor un asesor\. .*WhatsApp/);
+    expect(r.message.match(/asesor/g)).toHaveLength(1); // el cierre no repite "asesor"
     expect(r.waUrl).toMatch(/^https:\/\/wa\.me\//);
   });
 

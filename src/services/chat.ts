@@ -12,7 +12,9 @@ import { createHandoff } from './handoff';
 import type { LiveNotify } from './liveEvents';
 import type { LlmBudget } from './llmBudget';
 import { LlmUnavailableError, type LlmClient, type LlmMessage, type LlmMeta } from './ollama';
-import { classify } from './intents';
+import { classify, COMMERCIAL_RE, JOB_SENSE, looksLikeQuestion, topicText } from './intents';
+import { FIRST_NAMES, SURNAMES } from './lexicon';
+import { withoutVisitorData } from './visitorData';
 
 export interface ChatReply {
   type: 'answer' | 'handoff_offer' | 'fallback' | 'live';
@@ -60,21 +62,63 @@ const CLOSINGS = [
   'Un asesor te atenderá por WhatsApp; toca el botón.',
   'Puedes continuar con un asesor por WhatsApp aquí abajo.',
 ] as const;
+/** Lo mismo cuando la frase anterior ya nombra al asesor ("Un asesor puede ayudarte con eso."): no se repite la palabra. */
+const CLOSINGS_AFTER_ADVISOR = [
+  'Puedes continuar por WhatsApp aquí abajo.',
+  'Te atenderá por WhatsApp; toca el botón.',
+  'Sigue la conversación por WhatsApp con el botón.',
+] as const;
 const notPublished = () => pick(NOT_PUBLISHED_VARIANTS);
 
+/**
+ * Momento de la conversación para los textos fijos: a quien ya espera un asesor ('waiting') o está dando sus datos
+ * para pasar con uno ('collecting') no se le vuelve a ofrecer "comunicarte con un asesor".
+ */
+export type ChatMoment = 'normal' | 'waiting' | 'collecting';
+/** El nombre de la empresa tal cual ("… S.A.S."); tidy() quita el punto doble si después va otro punto. */
+export const companyName = (company: Pick<Company, 'name'>) => company.name.trim();
+
 /** Preguntas ajenas a la empresa (cultura general, chistes, instrucciones raras): se redirige con amabilidad, sin asesor. */
-export const offTopicText = (company: Pick<Company, 'name'>) => pick([
-  `Solo puedo ayudarte con temas de ${company.name}: nuestros servicios, canales de atención o comunicarte con un asesor. ¿Te ayudo con algo de eso?`,
-  `Eso se sale de lo que puedo responder por aquí. Puedo contarte sobre los servicios de ${company.name} o comunicarte con un asesor. ¿Qué necesitas?`,
-  `En este chat solo atiendo consultas sobre ${company.name}. ¿Quieres saber de nuestros servicios o hablar con un asesor?`,
-]);
+export const offTopicTexts = (company: Pick<Company, 'name'>, moment: ChatMoment = 'normal'): string[] =>
+  (moment === 'normal'
+    ? [
+        `Solo puedo ayudarte con temas de ${companyName(company)}: nuestros servicios, canales de atención o comunicarte con un asesor. ¿Te ayudo con algo de eso?`,
+        `Eso se sale de lo que puedo responder por aquí. Puedo contarte sobre los servicios de ${companyName(company)} o comunicarte con un asesor. ¿Qué necesitas?`,
+        `En este chat solo atiendo consultas sobre ${companyName(company)}. ¿Quieres saber de nuestros servicios o hablar con un asesor?`,
+      ]
+    : [
+        `Eso se sale de lo que puedo responder por aquí. Puedo contarte sobre los servicios y canales de atención de ${companyName(company)}.`,
+        `En este chat solo atiendo consultas sobre ${companyName(company)}: sus servicios y canales de atención.`,
+      ]).map(tidy);
+export const offTopicText = (company: Pick<Company, 'name'>, moment: ChatMoment = 'normal') => pick(offTopicTexts(company, moment));
 /** "Necesito ayuda", "tengo una pregunta": se pregunta qué necesita, sin gastar el modelo. */
-export const helpText = () => pick([
-  'Claro, ¿en qué te puedo ayudar? Puedo contarte sobre nuestros servicios y canales de atención, o comunicarte con un asesor.',
-  'Con gusto. ¿Qué necesitas saber? Puedo darte información de nuestros servicios o comunicarte con un asesor.',
-]);
-export const identityText = (company: Pick<Company, 'name'>) =>
-  `Soy el asistente virtual de ${company.name}. Puedo contarte sobre nuestros servicios y, si lo necesitas, comunicarte con un asesor.`;
+export const helpTexts = (moment: ChatMoment = 'normal'): string[] =>
+  moment === 'normal'
+    ? [
+        'Claro, ¿en qué te puedo ayudar? Puedo contarte sobre nuestros servicios y canales de atención, o comunicarte con un asesor.',
+        'Con gusto. Puedo darte información de nuestros servicios o comunicarte con un asesor. ¿Qué necesitas saber?',
+      ]
+    : [
+        'Claro. Mientras tanto puedo contarte sobre nuestros servicios y canales de atención. ¿Qué necesitas saber?',
+        'Con gusto. Puedo darte información de nuestros servicios y canales de atención. ¿Qué necesitas saber?',
+      ];
+export const helpText = (moment: ChatMoment = 'normal') => pick(helpTexts(moment));
+export const identityText = (company: Pick<Company, 'name'>, moment: ChatMoment = 'normal') =>
+  tidy(moment === 'normal'
+    ? `Soy el asistente virtual de ${companyName(company)}. Puedo contarte sobre nuestros servicios y, si lo necesitas, comunicarte con un asesor.`
+    : `Soy el asistente virtual de ${companyName(company)}.`);
+/** Otra forma de presentarse, para no enviar el mismo mensaje dos veces seguidas. */
+export const identityAgainText = (company: Pick<Company, 'name'>) =>
+  tidy(`Como te contaba, soy el asistente virtual de ${companyName(company)}. ¿En qué te ayudo?`);
+
+/** "La línea no contesta", "el número no sirve", "tengo una queja": no es una pregunta por el número. */
+export const isComplaint = (message: string) => {
+  const n = normalize(message);
+  return CONTACT_COMPLAINT.test(n) || ADVISOR_COMPLAINT.test(n)
+    || /\b(queja|quejas|reclamo|reclamos|inconforme|mal servicio|pesimo|pesima|no me (ha |han |habia |habian )?(contestado|respondido|atendido|llamado|escrito|devuelto la llamada|resuelto|solucionado)|nadie (me )?(ha |han )?(contesta|responde|contestado|respondido))\b/.test(n);
+};
+/** "El asesor no me contestó", "mi asesora no me ha devuelto la llamada", "el asesor no me resolvió nada": se queja de un asesor. */
+const ADVISOR_COMPLAINT = /\b(asesor|asesora|asesores|agente|agentes|operador|operadora)\b(?: \S+){0,2}? (no|nunca|aun no|todavia no) (me |nos )?(ha |han |habia |me ha |me han )?(contesta|contestan|contesto|contestado|responde|responden|respondio|respondido|llama|llaman|llamo|llamado|escribe|escriben|escribio|escrito|ayuda|ayudan|ayudo|ayudado|resuelve|resuelven|resolvio|resuelto|soluciona|soluciono|solucionado|devuelve|devolvio|devuelto|atiende|atienden|atendio|atendido|explica|explico|explicado|da|dio|dado|sirve|sirvio|sabe|supo|informa|informo)\b/;
 
 /**
  * Frase del modelo para pasar con un asesor, relacionada con lo que preguntó el visitante. Solo se usa si es corta
@@ -118,6 +162,8 @@ export interface Knowledge {
   full: string;
   /** Datos (números, enlaces, correos) que sí aparecen en el sitio; sirven para detectar respuestas inventadas. */
   facts: Set<string>;
+  /** Palabras del sitio (marcas aliadas, servicios, lugares) que no son nombres de persona: no se toman como el nombre del visitante. */
+  vocab: Set<string>;
 }
 
 const FACT_RE = /https?:\/\/[^\s)]+|www\.[^\s)]+|[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d\s().-]{5,}\d/gi;
@@ -128,9 +174,13 @@ const sectionBlock = (s: ChatbotContent['sections'][number]) => `[${s.slug}] ${s
 const knowledgeCache = new Map<string, Knowledge>();
 const KNOWLEDGE_CACHE_MAX = 50;
 
-/** El contenido solo se lee de la base (y se procesa) cuando cambia el hash sincronizado. */
+/**
+ * El contenido solo se lee de la base (y se procesa) cuando cambia el hash sincronizado. Si la última
+ * sincronización falló, se sigue usando el último contenido bueno (el panel muestra el error): un fallo
+ * pasajero del sitio no deja al bot sin saber el teléfono o los servicios.
+ */
 async function loadKnowledge(db: Db, company: Company): Promise<Knowledge | null> {
-  if (company.content_status !== 'ok' || !company.content_hash) return null;
+  if (!company.content_hash) return null;
   const key = `${company.id}:${company.content_hash}`;
   const hit = knowledgeCache.get(key);
   if (hit) return hit;
@@ -142,10 +192,43 @@ async function loadKnowledge(db: Db, company: Company): Promise<Knowledge | null
   return k;
 }
 
+/**
+ * Números que publica la empresa (líneas, NIT con y sin dígito de verificación): si el visitante los escribe
+ * ("¿el 604 607 4101 es de ustedes?") no son su documento.
+ */
+export async function companyNumbers(db: Db, company: Company): Promise<Set<string>> {
+  return (await companyFacts(db, company)).numbers;
+}
+
+/**
+ * Lo que la empresa publica y el visitante podría escribir sin que sea su dato: sus números (no son su documento) y
+ * las palabras de su sitio y de su nombre ("Flamingo", "Offcorss", "AAgora": no son su nombre).
+ */
+export async function companyFacts(db: Db, company: Company): Promise<{ numbers: Set<string>; words: Set<string> }> {
+  const k = await loadKnowledge(db, company);
+  const numbers = new Set<string>();
+  for (const f of k?.facts ?? []) {
+    if (!/^\d{5,}$/.test(f)) continue;
+    numbers.add(f);
+    if (f.length >= 9) numbers.add(f.slice(0, -1));
+  }
+  const words = new Set(k?.vocab ?? []);
+  for (const w of normalize(company.name).split(' ')) if (w.length >= 3 && !FIRST_NAMES.has(w) && !SURNAMES.has(w)) words.add(w);
+  return { numbers, words };
+}
+
+/** "Me llamaron del 604 607 4101, ¿es de ustedes?": confirma un número que la empresa publica (o null). */
+export async function companyNumberText(db: Db, company: Company, message: string): Promise<string | null> {
+  const k = await loadKnowledge(db, company);
+  return k ? companyNumberAnswer(k, message)?.text ?? null : null;
+}
+
 export function buildKnowledge(content: ChatbotContent): Knowledge {
   const full = content.sections.map(sectionBlock).join('\n\n');
-  const words = new Set(normalize(full).split(' ').filter((w) => w.length >= 5).map((w) => w.slice(0, 5)));
-  return { content, contacts: contactLines(content), full, words, facts: new Set((full.match(FACT_RE) ?? []).map(factKey)) };
+  const all = normalize(full).split(' ');
+  const words = new Set(all.filter((w) => w.length >= 5).map((w) => w.slice(0, 5)));
+  const vocab = new Set(all.filter((w) => w.length >= 3 && !/\d/.test(w) && !FIRST_NAMES.has(w) && !SURNAMES.has(w)));
+  return { content, contacts: contactLines(content), full, words, facts: new Set((full.match(FACT_RE) ?? []).map(factKey)), vocab };
 }
 
 /**
@@ -189,26 +272,144 @@ function contactLines(content: ChatbotContent): ContactLine[] {
   return out;
 }
 
-const WANT_PHONE = /\b(telefono|telefonos|numero|numeros|celular|celulares|llamar|llamo|linea|lineas|fijo|movil)\b/;
+/**
+ * Qué dato de contacto pide la pregunta. Solo palabras que piden ESE dato: "número" o "fijo" sueltos no son el
+ * teléfono ("número de NIT", "costo fijo"), "me llamo" no es "llamar" y "¿dónde está el formulario?" no es una sede.
+ */
+const WANT_PHONE =
+  /\b(telefono|telefonos|pbx|conmutador|celular|celulares)\b|(?<!\ben )\blineas?\b(?! de (credito|creditos|productos|negocio))|\bnumeros?\b(?! de (nit|cuenta|radicado|documento|cedula|identificacion|obligacion|factura|referencia|pedido|guia|credito|contrato|cliente|clientes|caso|proceso|pi|aliados|sedes|servicios|empleados|asesores)\b)|\bcomo (los|las|le|les) llamo\b|\b(llamarlos|llamarles|llamar a ustedes|puedo llamar|a donde llamo|donde llamo)\b/;
 const WANT_EMAIL = /\b(correo|correos|email|mail|e mail)\b/;
-const WANT_ADDRESS = /\b(direccion|direcciones|ubicacion|ubicados|ubicadas|sede|sedes|oficina|oficinas|visitar|queda|quedan)\b|\bdonde (esta|estan|queda|quedan|se encuentra|se encuentran)\b/;
+// "¿Dónde quedan?" pide la sede (también "¿dónde quedan y cuál es el teléfono?"); "¿dónde quedan las Islas Canarias?" o
+// "¿dónde se encuentran los aliados?" no.
+const WANT_ADDRESS =
+  /\b(direccion|direcciones|ubicacion|ubicados|ubicadas|ubicada|ubicado|sede|sedes|oficina|oficinas|sucursal|sucursales|visitarlos|visitar|punto de atencion|puntos de atencion)\b|\bdonde (estan|quedan|se encuentran|se ubican|los encuentro|los ubico|atienden)\b(?=$| (ustedes|ubicad[oa]s|sus (oficinas|sedes)|las (oficinas|sedes)|la (oficina|sede)|en |exactamente|fisicamente|y |e |o |cual|cuales|telefono|correo|horario|como|que|porfa|por favor|gracias))|\bdonde (queda|esta) (la|su) (oficina|sede|empresa)\b/;
+/**
+ * Además del dato pide otra cosa ("¿la oficina de Bogotá atiende los sábados?", "¿el teléfono atiende 24 horas?",
+ * "¿puedo ir a la oficina sin cita?"): no se responde solo con la dirección o la línea.
+ */
+const EXTRA_ASK = /\b(atiende|atienden|sabado|sabados|domingo|domingos|festivo|festivos|24 horas|sin cita|con cita|cita previa|pagar|pago|pagos|puedo ir|se puede|recibe|reciben|aceptan|parqueadero|como llego|cuanto cuesta|precio|requisitos|funciona|funcionan|disponible|disponibles)\b/;
+/** Ciudades de Colombia: "¿tienen sede en Cali?" se responde con las sedes publicadas. */
+const CITIES: Record<string, string> = {
+  medellin: 'Medellín', bogota: 'Bogotá', cali: 'Cali', barranquilla: 'Barranquilla', cartagena: 'Cartagena', bucaramanga: 'Bucaramanga',
+  pereira: 'Pereira', manizales: 'Manizales', armenia: 'Armenia', ibague: 'Ibagué', neiva: 'Neiva', pasto: 'Pasto', popayan: 'Popayán',
+  monteria: 'Montería', sincelejo: 'Sincelejo', valledupar: 'Valledupar', 'santa marta': 'Santa Marta', riohacha: 'Riohacha', quibdo: 'Quibdó',
+  tunja: 'Tunja', yopal: 'Yopal', villavicencio: 'Villavicencio', cucuta: 'Cúcuta', florencia: 'Florencia', leticia: 'Leticia',
+  envigado: 'Envigado', itagui: 'Itagüí', bello: 'Bello', sabaneta: 'Sabaneta', rionegro: 'Rionegro', soacha: 'Soacha', palmira: 'Palmira',
+  tulua: 'Tuluá', buenaventura: 'Buenaventura', cartago: 'Cartago', girardot: 'Girardot', zipaquira: 'Zipaquirá', chia: 'Chía',
+  facatativa: 'Facatativá', fusagasuga: 'Fusagasugá', duitama: 'Duitama', sogamoso: 'Sogamoso', barrancabermeja: 'Barrancabermeja',
+  apartado: 'Apartadó', caucasia: 'Caucasia', ipiales: 'Ipiales', tumaco: 'Tumaco', 'san andres': 'San Andrés', jamundi: 'Jamundí',
+  dosquebradas: 'Dosquebradas', floridablanca: 'Floridablanca', giron: 'Girón', piedecuesta: 'Piedecuesta', malambo: 'Malambo',
+  soledad: 'Soledad', arauca: 'Arauca', mocoa: 'Mocoa', mitu: 'Mitú', inirida: 'Inírida', 'san jose del guaviare': 'San José del Guaviare',
+  'puerto carreno': 'Puerto Carreño', turbo: 'Turbo', ocana: 'Ocaña', pamplona: 'Pamplona', honda: 'Honda',
+  espinal: 'Espinal', lorica: 'Lorica', sahagun: 'Sahagún', magangue: 'Magangué', aguachica: 'Aguachica', maicao: 'Maicao',
+  yumbo: 'Yumbo', funza: 'Funza', mosquera: 'Mosquera', madrid: 'Madrid', cajica: 'Cajicá', sopo: 'Sopó', 'la ceja': 'La Ceja',
+  marinilla: 'Marinilla', copacabana: 'Copacabana', girardota: 'Girardota', 'la estrella': 'La Estrella', caldas: 'Caldas',
+};
+/** Departamentos: "¿tienen sede en Antioquia?" se responde con la de su capital (Medellín), si está publicada. */
+const DEPARTMENTS: Record<string, { name: string; capital: string }> = {
+  antioquia: { name: 'Antioquia', capital: 'medellin' }, cundinamarca: { name: 'Cundinamarca', capital: 'bogota' },
+  'valle del cauca': { name: 'Valle del Cauca', capital: 'cali' }, atlantico: { name: 'Atlántico', capital: 'barranquilla' },
+  bolivar: { name: 'Bolívar', capital: 'cartagena' }, santander: { name: 'Santander', capital: 'bucaramanga' },
+  'norte de santander': { name: 'Norte de Santander', capital: 'cucuta' }, risaralda: { name: 'Risaralda', capital: 'pereira' },
+  quindio: { name: 'Quindío', capital: 'armenia' }, tolima: { name: 'Tolima', capital: 'ibague' }, huila: { name: 'Huila', capital: 'neiva' },
+  narino: { name: 'Nariño', capital: 'pasto' }, cauca: { name: 'Cauca', capital: 'popayan' }, cordoba: { name: 'Córdoba', capital: 'monteria' },
+  sucre: { name: 'Sucre', capital: 'sincelejo' }, cesar: { name: 'Cesar', capital: 'valledupar' }, magdalena: { name: 'Magdalena', capital: 'santa marta' },
+  guajira: { name: 'La Guajira', capital: 'riohacha' }, choco: { name: 'Chocó', capital: 'quibdo' }, boyaca: { name: 'Boyacá', capital: 'tunja' },
+  casanare: { name: 'Casanare', capital: 'yopal' }, meta: { name: 'Meta', capital: 'villavicencio' }, caqueta: { name: 'Caquetá', capital: 'florencia' },
+  amazonas: { name: 'Amazonas', capital: 'leticia' }, putumayo: { name: 'Putumayo', capital: 'mocoa' }, guaviare: { name: 'Guaviare', capital: 'san jose del guaviare' },
+  vaupes: { name: 'Vaupés', capital: 'mitu' }, vichada: { name: 'Vichada', capital: 'puerto carreno' }, guainia: { name: 'Guainía', capital: 'inirida' },
+  'san andres y providencia': { name: 'San Andrés', capital: 'san andres' },
+};
+const ASKS_PLACE = /\b(tienen|hay|cuentan con|existe|existen)\b.*\b(sede|sedes|oficina|oficinas|sucursal|sucursales|punto|puntos)\b|\b(atienden|estan|trabajan|tienen presencia|tienen sucursal|tienen sucursales|tienen oficina|tienen oficinas|tienen sede|operan|quedan|queda) en\b|^(y )?en [a-z]+( [a-z]+)?$/;
+const placeIn = (nm: string, key: string) => new RegExp(`\\b(en|de|del|y|o|a|para) ${key}\\b`).test(nm);
+const citiesIn = (nm: string) => Object.keys(CITIES).filter((c) => placeIn(nm, c) && !Object.keys(CITIES).some((o) => o !== c && o.includes(c) && placeIn(nm, o)));
+const departmentsIn = (nm: string) => Object.keys(DEPARTMENTS).filter((d) => placeIn(nm, d) && !(d === 'santander' && placeIn(nm, 'norte de santander')));
+/** "Soy de Cali, ¿cuál es el correo?": dónde está el visitante no es lo que pregunta. */
+const USER_PLACE = /\b(soy|vivo|estoy|resido|escribo|vengo|llamo|somos|estamos|vivimos) (de|en|desde) (la ciudad de |el municipio de )?[a-z]+( [a-z]+)?\b/g;
+const USER_CITY = /\b(?:soy|vivo|estoy|resido|escribo|vengo|llamo|somos|estamos|vivimos) (?:de|en|desde) (?:la ciudad de |el municipio de )?([a-z]+(?: [a-z]+){0,2})\b/;
+/** "Soy colombiano", "somos venezolanos": la nacionalidad no es un lugar por el que pregunte. */
+const NATIONALITY = /\b(soy|somos) (colombian|venezolan|ecuatorian|peruan|mexican|argentin|chilen|bolivian|guatemaltec|espanol)[a-z]*\b/g;
+/** "¿Tienen sede aquí?", "¿tienen oficina allá?": habla de la ciudad donde está el visitante. */
+const DEICTIC = /\b(aqui|aca|alla|ahi|alli|por aca|por alla|en mi ciudad|en mi municipio|donde vivo|donde estoy|cerca)\b/g;
+const listOf = (parts: string[]) => (parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts.at(-1)}` : parts[0] ?? '');
 const WANT_HOURS = /\b(horario|horarios|abren|cierran)\b|a que hora/;
 const WANT_GENERIC = /\b(contacto|contactar|contactarlos|contactarme|comunicar|comunicarme|comunico|contactos)\b/;
-/** Raíces de las palabras anteriores: no cuentan como "el lugar o tema" que el visitante menciona (p. ej. Bogotá). */
+/** Raíces de palabras que no son "el lugar o tema" que el visitante menciona (p. ej. Bogotá o PQR). */
 const INTENT_STEMS = new Set(
-  'telefono telefonos numero numeros celular celulares llamar llamo linea lineas fijo movil correo correos email mail direccion direcciones ubicacion ubicados ubicadas sede sedes oficina oficinas visitar queda quedan horario horarios abren cierran contacto contactar contactarlos contactarme comunicar comunicarme comunico contactos empresa'
-    .split(' ')
+  `telefono telefonos numero numeros celular celulares llamar llamo linea lineas fijo movil correo correos email mail direccion
+   direcciones ubicacion ubicados ubicadas ubicada ubicado sede sedes oficina oficinas visitar visitarlos queda quedan horario
+   horarios abren cierran contacto contactar contactarlos contactarme comunicar comunicarme comunico contactos empresa estan
+   tienen tiene donde atencion encuentran encuentro regalas regala regalan dame deme podrias podria puedes pueden puedo pasas
+   pasame envias indicas indicame dices decir conocer tener necesito quiero quisiera busco cuales cual favor gracias hola
+   buenas tardes noches dias porfa ustedes llamarlos pbx conmutador punto puntos pagina sitio web general datos dato enviar
+   envio mandar escribir radicar sucursal sucursales hablar hablarle asesor asesora asesores persona alguien servicio
+   servicios informacion consulta consultas whatsapp wasap watsap tema caso`
+    .split(/\s+/)
+    .filter(Boolean)
     .map((w) => w.slice(0, 5)),
 );
 
+/** El mensaje pide un dato de contacto (teléfono, correo, dirección u horario). */
+export const asksContact = (message: string) => {
+  const nm = normalize(message);
+  return WANT_PHONE.test(nm) || WANT_EMAIL.test(nm) || WANT_ADDRESS.test(nm) || WANT_HOURS.test(nm);
+};
+
 /**
  * "¿Cuál es el teléfono / correo / dirección / horario?": se responde con las líneas del sitio que traen ese dato,
- * citadas tal cual, sin modelo y al instante. Si la pregunta nombra un lugar (p. ej. Bogotá), se prefieren sus líneas.
- * Si el sitio no publica ese dato, devuelve null y sigue el flujo normal (modelo o asesor).
+ * citadas tal cual, sin modelo y al instante. Si la pregunta nombra un lugar o un canal (Bogotá, PQR), se usan sus
+ * líneas. Si pide algo que el sitio no publica (WhatsApp, horario, una ciudad sin sede) o trae más temas, devuelve
+ * null y responde el modelo, que puede decir qué no está publicado.
+ * `partial` (sin modelo): responde lo que sí está publicado y dice qué no ("Línea …. El horario de atención no aparece
+ * publicado en el sitio."), en vez de no dar nada.
  */
-export function contactAnswer(k: Knowledge, message: string): { text: string; section: ChatbotContent['sections'][number] } | null {
-  const nm = normalize(message);
+export function contactAnswer(
+  k: Knowledge, message: string, opts: { partial?: boolean } = {},
+): { text: string; section: ChatbotContent['sections'][number] } | null {
+  // "Soy de Cali, ¿cuál es el correo?": la ciudad del visitante no es la que pregunta. Pero en "vivo en Cali, ¿tienen
+  // sede aquí?" o "estoy en Bogotá, ¿dónde queda la oficina?" sí: pregunta por una sede en su ciudad.
+  const raw = normalize(message).replace(NATIONALITY, ' ').replace(/\s+/g, ' ').trim();
+  const cityWords = raw.match(USER_CITY)?.[1].split(' ') ?? [];
+  const userCity = [3, 2, 1].map((size) => cityWords.slice(0, size).join(' ')).find((c) => !!c && (!!CITIES[c] || !!DEPARTMENTS[c])) ?? null;
+  let nm = raw.replace(USER_PLACE, ' ').replace(/\s+/g, ' ').trim();
+  if (userCity && (DEICTIC.test(nm) || WANT_ADDRESS.test(nm) || ASKS_PLACE.test(nm))) {
+    nm = `${nm.replace(DEICTIC, ' ')} en ${userCity}`.replace(/\s+/g, ' ').trim();
+  }
+  if (nm.length > 150) return null; // un mensaje largo trae más de una pregunta
+  // "La línea no contesta", "nadie me contesta en la línea": una queja; no se le da la misma línea.
+  if (CONTACT_COMPLAINT.test(nm) || isComplaint(message)) return null;
+  const notes: string[] = [];
   const wanted = new Set<ContactKind>();
+  const placeVerbs = /\b(atienden|atiende|estan|trabajan|operan|quedan|queda|donde atienden|tienen presencia|tienen (sede|sedes|oficina|oficinas|sucursal|sucursales)) en\b|\bdonde atienden\b/g;
+  // "¿Tienen sede en Cali?": si la ciudad no aparece en ninguna dirección publicada, se dice y se nombran las sedes;
+  // "¿atienden en Bogotá?" se responde con la sede de Bogotá.
+  if (WANT_ADDRESS.test(nm) || ASKS_PLACE.test(nm)) {
+    const addresses = k.contacts.filter((l) => l.kinds.has('address'));
+    const published = (c: string) => addresses.some((l) => new RegExp(`\\b${c}\\b`).test(normalize(l.text)));
+    // "¿Tienen sede en Antioquia?": un departamento cuenta como su capital si ahí hay sede; si no, se dice que no hay.
+    const depts = departmentsIn(nm);
+    for (const d of depts) {
+      const capital = DEPARTMENTS[d].capital;
+      if (published(capital)) nm = nm.replace(new RegExp(`\\b(en|de|del|y|o|a|para) ${d}\\b`, 'g'), `$1 ${capital}`);
+    }
+    const asked = citiesIn(nm);
+    const unknownDepts = departmentsIn(nm).filter((d) => !published(DEPARTMENTS[d].capital) && !asked.includes(d));
+    const unknown = asked.filter((c) => !published(c));
+    const unknownNames = [...unknown.map((c) => CITIES[c]), ...unknownDepts.map((d) => DEPARTMENTS[d].name)];
+    const extra = EXTRA_ASK.test(nm.replace(placeVerbs, ' '));
+    if (unknownNames.length > 0 && addresses.length > 0 && !extra) {
+      const missingText = `En el sitio no aparece una sede en ${listOf(unknownNames)}.`;
+      // Si también preguntó por una ciudad que sí tiene sede ("¿en Medellín y Cali?"), se da esa dirección.
+      if (asked.length > unknown.length) {
+        const rest = [...unknown, ...unknownDepts].reduce((t, c) => t.replace(new RegExp(`\\b(en|de|del|y|o|a|para) ${c}\\b`, 'g'), ' '), nm);
+        const known = contactAnswer(k, rest);
+        if (known) return { text: joinText(known.text, missingText), section: known.section };
+      }
+      const where = Object.keys(CITIES).filter(published).map((c) => CITIES[c]);
+      return { text: joinText(missingText, where.length > 0 ? `Nuestras sedes publicadas están en ${listOf(where)}.` : ''), section: addresses[0].section };
+    }
+    if (asked.length > 0 && addresses.length > 0 && (ASKS_PLACE.test(nm) || !!userCity)) wanted.add('address');
+  }
   if (WANT_PHONE.test(nm)) wanted.add('phone');
   if (WANT_EMAIL.test(nm)) wanted.add('email');
   if (WANT_ADDRESS.test(nm)) wanted.add('address');
@@ -218,15 +419,60 @@ export function contactAnswer(k: Knowledge, message: string): { text: string; se
     wanted.add('email');
   }
   if (wanted.size === 0) return null;
+  // Pide además otra cosa (si atienden los sábados, si se puede pagar allí): responde el modelo con todo; sin modelo se
+  // da el dato y se aclara que lo demás no está publicado.
+  if (!(wanted.size === 1 && wanted.has('hours')) && EXTRA_ASK.test(nm.replace(placeVerbs, ' '))) {
+    if (!opts.partial) return null;
+    notes.push(/\b(atiende|atienden|sabado|sabados|domingo|domingos|festivo|festivos|24 horas|abren|cierran)\b/.test(nm)
+      ? 'El horario de atención no aparece publicado en el sitio.'
+      : 'Lo demás que preguntas no aparece publicado en el sitio.');
+  }
+  // WhatsApp no es la línea de atención: si el sitio no lo publica, que el modelo lo aclare.
+  if (/\b(whatsapp|wsp|wasap|watsap)\b/.test(nm) && !k.contacts.some((l) => /whatsapp/i.test(l.text))) {
+    if (!opts.partial) return null;
+    notes.push('En el sitio no aparece un número de WhatsApp.');
+    if (!/\b(telefono|telefonos|linea|lineas|numero|celular)\b/.test(nm)) wanted.add('phone');
+  }
 
   let lines = k.contacts.filter((l) => [...wanted].some((w) => l.kinds.has(w)));
-  if (lines.length === 0) return null;
-  const places = tokens(message).filter((t) => !INTENT_STEMS.has(t));
+  // Cada dato pedido debe estar publicado; si falta alguno (p. ej. el horario), responde el modelo con todo. Sin modelo
+  // se da lo publicado y se dice qué no; si no hay nada publicado de lo que pide, se dice y se da la línea de atención.
+  const unpublishedNote = (w: ContactKind) => (w === 'hours' ? 'El horario de atención no aparece publicado en el sitio.' : w === 'email' ? 'En el sitio no aparece un correo.' : w === 'address' ? 'En el sitio no aparece una dirección.' : 'En el sitio no aparece un teléfono.');
+  const unpublished = [...wanted].filter((w) => !lines.some((l) => l.kinds.has(w)));
+  if (unpublished.length > 0) {
+    if (!opts.partial) return null;
+    if (unpublished.length === wanted.size) {
+      const line = k.contacts.find((l) => l.kinds.has('phone'));
+      const shown = line ? shownNumber(line) : null;
+      const text = joinText(...new Set([...notes, ...unpublished.map(unpublishedNote)]), shown ? `Puedes consultarlo en la línea de atención: ${shown}.` : '');
+      return { text, section: line?.section ?? k.content.sections[0] };
+    }
+    for (const w of unpublished) {
+      wanted.delete(w);
+      notes.push(unpublishedNote(w));
+    }
+  }
+  const lineTokens = (l: ContactLine) => new Set(tokens(`${l.text} ${l.section.title}`));
+  // Pide el dato DE algo que ninguna línea trae ("¿tienen sede en Cali?", "el teléfono de facturación"): no se
+  // adivina con la línea general; responde el modelo, que puede decir que no está publicado. Sin modelo se da el general
+  // y se aclara.
+  const named = [...nm.matchAll(/\b(?:en|de|del|para|sobre)\s+(?:(?:la|el|los|las)\s+)?([a-z0-9ñ]+)/g)]
+    .map((m) => tokens(m[1])[0])
+    .filter((t): t is string => !!t && !INTENT_STEMS.has(t));
+  if (named.some((t) => !lines.some((l) => lineTokens(l).has(t)))) {
+    if (!opts.partial) return null;
+    notes.push('En el sitio no aparece un dato específico para eso.');
+  }
+  // Si nombra un lugar o un canal (Bogotá, PQR), se prefieren sus líneas. Cuenta la etiqueta de la línea, el título de
+  // su sección o una ciudad que nombre; no cualquier palabra de la dirección ("interesa" no es "Centro Internacional").
+  const labelOf = (l: ContactLine) => { const colon = l.text.indexOf(':'); return colon > 0 && colon <= 80 ? l.text.slice(0, colon) : ''; };
+  const placeTokens = (l: ContactLine) => new Set([
+    ...tokens(`${labelOf(l)} ${l.section.title}`),
+    ...Object.keys(CITIES).filter((c) => new RegExp(`\\b${c}\\b`).test(normalize(l.text))).flatMap((c) => tokens(c)),
+  ]);
+  const places = tokens(nm).filter((t) => !INTENT_STEMS.has(t));
   if (places.length > 0) {
-    const hit = lines.filter((l) => {
-      const lt = new Set(tokens(`${l.text} ${l.section.title}`));
-      return places.some((t) => lt.has(t));
-    });
+    const hit = lines.filter((l) => places.some((t) => placeTokens(l).has(t)));
     if (hit.length > 0) lines = hit;
   }
   // Si la sección de contacto publica el dato, se usa solo ella: no se mezclan párrafos de otras secciones
@@ -246,6 +492,10 @@ export function contactAnswer(k: Knowledge, message: string): { text: string; se
   // Un número que el sitio publica para varias sedes o líneas no se etiqueta con la primera (p. ej. "Medellín").
   const linesPerNumber = new Map<string, number>();
   for (const l of lines) for (const d of new Set(l.numbers)) linesPerNumber.set(d, (linesPerNumber.get(d) ?? 0) + 1);
+  // Igual con un correo que publican varias líneas (contacto, PQR, RR. HH.): no se etiqueta con la primera.
+  const emailsOf = (l: ContactLine) => (l.text.match(new RegExp(EMAIL_RE.source, 'g')) ?? []).map((e) => e.replace(/[.,;:]+$/, '').toLowerCase());
+  const linesPerEmail = new Map<string, number>();
+  for (const l of lines) for (const e of new Set(emailsOf(l))) linesPerEmail.set(e, (linesPerEmail.get(e) ?? 0) + 1);
   for (const l of lines) {
     const colon = l.text.indexOf(':');
     const label = colon > 0 && colon <= 80 ? l.text.slice(0, colon).trim() : '';
@@ -261,7 +511,8 @@ export function contactAnswer(k: Knowledge, message: string): { text: string; se
     if (wanted.has('email') && l.kinds.has('email')) {
       for (const found of l.text.match(new RegExp(EMAIL_RE.source, 'g')) ?? []) {
         const email = found.replace(/[.,;:]+$/, ''); // un punto final de la frase no es parte del correo
-        add('email', email.toLowerCase(), label ? `${label}: ${email}` : email);
+        const shared = (linesPerEmail.get(email.toLowerCase()) ?? 0) > 1;
+        add('email', email.toLowerCase(), shared ? `Correo de contacto: ${email}` : label ? `${label}: ${email}` : email);
       }
     }
     if (wanted.has('address') && l.kinds.has('address')) {
@@ -275,11 +526,57 @@ export function contactAnswer(k: Knowledge, message: string): { text: string; se
   const parts = [...groups.phone, ...groups.email, ...groups.address, ...groups.hours].map(tidy);
   if (parts.length === 0) return null;
   const text = parts.length === 1 ? parts[0] : `Estos son los datos publicados en el sitio:\n• ${parts.join('\n• ')}`;
-  return { text: text.slice(0, 700), section: lines[0].section };
+  return { text: joinText(text.slice(0, 700), ...new Set(notes)), section: lines[0].section };
 }
 
+/**
+ * "¿El 604 607 4101 es de ustedes?", "¿el NIT 901476289-2 es de ustedes?": el visitante pregunta por un número que
+ * la empresa publica. Se confirma con el sitio, sin modelo (y nunca se toma como su documento).
+ */
+export function companyNumberAnswer(k: Knowledge, message: string): { text: string; section: ChatbotContent['sections'][number] } | null {
+  const nm = normalize(message);
+  const asksOurs = /\b(es|son|sera|seria|era) (de |el de |la de )?(ustedes|suyo|suya|su|la empresa)\b|\bpertenece\b|\bes (real|oficial)\b/.test(nm);
+  if (!/[?¿]/.test(message) && !asksOurs) return null;
+  const numbers = message.match(/\+?\d[\d\s().-]{5,}\d/g) ?? [];
+  for (const m of numbers) {
+    const digits = m.replace(/\D/g, '');
+    const known = (d: string) => k.facts.has(d) || [...k.facts].some((f) => /^\d+$/.test(f) && f.length >= 9 && f.slice(0, -1) === d);
+    if (!known(digits)) continue;
+    const phone = k.contacts.find((l) => l.kinds.has('phone') && l.numbers.includes(digits));
+    if (phone) return { text: `Sí, el ${m.trim()} es la línea de atención publicada en nuestro sitio.`, section: phone.section };
+    for (const section of k.content.sections) {
+      const sentence = splitSentences(section.text).filter((x) => x.replace(/\D/g, '').includes(digits)).sort((a, b) => a.length - b.length)[0];
+      if (sentence) return { text: `Sí, ese número aparece en nuestro sitio: ${tidy(sentence)}`, section };
+    }
+  }
+  // "¿El NIT 900123456-1 es de ustedes?" con un número que el sitio no publica: se dice, con el que sí publica.
+  if (asksOurs && numbers.some((m) => m.replace(/\D/g, '').length >= 7)) {
+    for (const section of k.content.sections) {
+      const nit = /\bnit\b/.test(nm) ? section.text.match(/\bNIT\s*:?\s*(\d[\d.\s-]{6,}\d)/i)?.[1] : undefined;
+      if (nit) return { text: `Ese número no aparece en nuestro sitio. El NIT que publicamos es ${nit.trim()}.`, section };
+    }
+    const line = k.contacts.find((l) => l.kinds.has('phone'));
+    const shown = line?.text.match(NUMBER_RE)?.find((x) => { const d = x.replace(/\D/g, ''); return d.length >= 7 && d.length <= 13; });
+    if (line && shown && !/\bnit\b/.test(nm)) return { text: `Ese número no aparece en nuestro sitio. Nuestra línea de atención publicada es ${shown.trim()}.`, section: line.section };
+    return { text: 'Ese número no aparece en nuestro sitio.', section: k.content.sections[0] };
+  }
+  return null;
+}
+
+/** El número de teléfono de una línea, tal como lo publica el sitio. */
+function shownNumber(l: ContactLine): string | null {
+  const found = (l.text.match(NUMBER_RE) ?? []).find((x) => { const d = x.replace(/\D/g, ''); return d.length >= 7 && d.length <= 13; });
+  return found ? found.trim() : null;
+}
+
+/** "La línea no contesta", "el número no sirve": es una queja, no una pregunta por el número. */
+const CONTACT_COMPLAINT = /\bno (contesta|contestan|responde|responden|atiende|atienden|sirve|funciona|entra|timbra|conecta|me (contestan|responden|atienden))\b|\b(ocupad[oa]|apagad[oa]|fuera de servicio)\b/;
+
+/** Siglas cortas que sí son tema ("línea de PQR", "el NIT"). */
+const SHORT_TOPICS = new Set(['pqr', 'nit', 'rut', 'eps', 'sas', 'bpo']);
+
 function tokens(s: string): string[] {
-  return normalize(s).split(' ').filter((w) => w.length >= 4 && !STOP.has(w)).map((w) => w.slice(0, 5));
+  return normalize(s).split(' ').filter((w) => (w.length >= 4 || SHORT_TOPICS.has(w)) && !STOP.has(w)).map((w) => w.slice(0, 5));
 }
 
 /**
@@ -309,9 +606,19 @@ function knowledgeText(k: Knowledge, message: string, budget: number): string {
   return picked.sort((a, b) => a.i - b.i).map((r) => sectionBlock(r.s)).join('\n\n');
 }
 
+/**
+ * Frases de un texto. No corta en iniciales ni abreviaturas ("A. AGORA", "Bogotá D. C.", "S.A.S."), solo cuando
+ * tras el punto empieza otra frase.
+ */
+const splitSentences = (text: string) =>
+  text.split(/\n+/)
+    .flatMap((line) => line.split(/(?<=[.!?])(?<!(?:^|[\s(])[A-ZÁÉÍÓÚÑ]\.)(?<!\b(?:No|Nro|Sr|Sra|Dr|Dra|Cra|Av|Ed)\.)\s+(?=[A-ZÁÉÍÓÚÑ¿¡0-9])/))
+    .map((x) => x.trim())
+    .filter(Boolean);
+
 /** Cada frase puntuada por las palabras de la pregunta que contiene. */
 function bestSentences(text: string, q: Set<string>, max = 2, maxChars = 420): string {
-  const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+  const sentences = splitSentences(text);
   const scored = sentences.map((x, i) => {
     const t = new Set(tokens(x));
     let score = 0;
@@ -330,12 +637,102 @@ function bestSentences(text: string, q: Set<string>, max = 2, maxChars = 420): s
 }
 
 /**
+ * Palabras de una pregunta que no son su tema ("¿qué / cuáles servicios tienen?"). "Quiénes" sí lo es cuando no
+ * hay otro ("¿quiénes son ustedes?"), pero no en "¿quiénes son sus aliados?".
+ */
+const QUESTION_WORDS = new Set(
+  `que cual cuales como donde cuando cuanto cuantos cuanta cuantas es son era la el los las lo de del un una unos unas y o
+   u en a al por para con me mi mis su sus tu tus te se le les nos ustedes usted tienen tiene tenes hay hacen hace ofrecen
+   ofrece brindan prestan manejan puedo pueden puede quiero quisiera saber sobre informacion info dime digame cuentame
+   cuenteme explicame expliqueme hablame favor porfa gracias hola buenas podrias podria seria esto eso este esta ese esa
+   estos estas esos esas algo mas muy tambien ya si no solo significa consiste trata exactamente busco buscando tal`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+const OPTIONAL_TOPICS = new Set(['quienes', 'quien']);
+/** Palabras de un título que no son su tema ("Nuestros servicios" trata de servicios). */
+const TITLE_FILLER = new Set(['nuestros', 'nuestras', 'nuestro', 'nuestra', 'nosotros', 'la', 'las', 'el', 'los', 'de', 'del', 'y', 'con', 'tu', 'su', 'sus', 'mas', 'conoce', 'sobre', 'a', 'en']);
+/** Equivalencias para el atajo estricto: la palabra de la pregunta también cumple con estas palabras del título. */
+const STRICT_SYNONYMS: Record<string, string[]> = {
+  quienes: ['nosotros', 'somos', 'quienes'], quien: ['nosotros', 'somos'], somos: ['nosotros', 'quienes'],
+  trabajar: ['trabaja'], empleo: ['trabaja'], empleos: ['trabaja'], vacante: ['trabaja'], vacantes: ['trabaja'],
+  marcas: ['aliados'], aliadas: ['aliados'], paises: ['presencia', 'internacional'], pais: ['presencia', 'internacional'],
+  juridico: ['juridica', 'legal'], juridica: ['juridica', 'legal'], privacidad: ['datos', 'proteccion'],
+};
+const sameWord = (a: string, b: string) => a === b || `${a}s` === b || `${b}s` === a || `${a}es` === b || `${b}es` === a;
+const plainWords = (s: string) => normalize(s).split(' ').filter(Boolean);
+
+/**
+ * La sección cuyo TÍTULO es justo lo que pregunta: cada palabra de la pregunta está en el título (o es su
+ * equivalente) y el título queda cubierto ("¿qué es la asesoría legal?" → "Asesoría Legal"). Palabras completas,
+ * no raíces: "intereses" no es "internacional" ni "trabajan" es "trabaja". "¿Esto es legal?" no es "Asesoría Legal".
+ */
+function titleMatch(k: Knowledge, message: string): ChatbotContent['sections'][number] | null {
+  let query = plainWords(message).filter((w) => (w.length >= 3 || SHORT_TOPICS.has(w)) && !QUESTION_WORDS.has(w));
+  if (query.some((w) => !OPTIONAL_TOPICS.has(w))) query = query.filter((w) => !OPTIONAL_TOPICS.has(w));
+  if (query.length === 0) return null;
+  const covers = (q: string, t: string) => sameWord(q, t) || (STRICT_SYNONYMS[q] ?? []).some((s) => sameWord(s, t));
+  for (const s of k.content.sections) {
+    for (const label of [s.title, s.slug.replace(/-/g, ' ')]) {
+      const all = plainWords(label);
+      const content = all.filter((w) => !TITLE_FILLER.has(w));
+      const titleWords = content.length > 0 ? content : all;
+      if (!query.every((q) => titleWords.some((t) => covers(q, t)))) continue;
+      const covered = titleWords.filter((t) => query.some((q) => covers(q, t))).length;
+      if (covered === titleWords.length || (titleWords.length >= 3 && covered / titleWords.length >= 2 / 3)) return s;
+    }
+  }
+  return null;
+}
+
+/** "Quiénes somos: …", "Recuperación de Cartera: …": la frase ya trae su propia etiqueta. */
+const LABELED = /^[^:.!?]{2,40}:\s/;
+
+/** "…escribe a la línea exclusiva de Recursos Humanos." sin el dato: se agrega el correo y la línea que publica esa línea. */
+const REFERS_LINE = /\bl[ií]nea exclusiva (?:de |del |para )?([\p{L}+ ]{2,40}?)(?=[.,;:]|$| y | o )/iu;
+function withReferencedContact(k: Knowledge, text: string): string {
+  if ((text.match(FACT_RE) ?? []).length > 0) return text;
+  const m = text.match(REFERS_LINE);
+  if (!m) return text;
+  const want = tokens(m[1]);
+  if (want.length === 0) return text;
+  for (const l of k.contacts) {
+    const colon = l.text.indexOf(':');
+    const label = colon > 0 && colon <= 80 ? l.text.slice(0, colon).trim() : '';
+    if (!label || !want.every((w) => new Set(tokens(label)).has(w))) continue;
+    const emails = (l.text.match(new RegExp(EMAIL_RE.source, 'g')) ?? []).map((e) => e.replace(/[.,;:]+$/, ''));
+    const phones = (l.text.match(NUMBER_RE) ?? []).filter((x) => { const d = x.replace(/\D/g, ''); return d.length >= 7 && d.length <= 13; }).map((x) => x.trim());
+    const facts = [...new Set([...emails, ...phones])];
+    if (facts.length > 0) return joinText(text, `${label}: ${facts.join(' · ')}`);
+  }
+  return text;
+}
+
+/**
  * Respuesta sin modelo: la sección del sitio más relacionada con la pregunta, citada tal cual.
  * `minScore` exige una coincidencia clara (palabra en el título = 2 puntos, en el texto = 1) y `minCoverage` la
  * fracción de palabras relevantes de la pregunta que la sección debe contener (así "cuánto cuesta el servicio" no
  * se responde con la sección "Servicios", que solo cubre una de sus palabras).
+ * `strict`: solo la sección cuyo título es exactamente lo que se pregunta (ver titleMatch).
  */
 export function extractiveAnswer(k: Knowledge, message: string, minScore: number, minCoverage = 0, opts: { strict?: boolean } = {}) {
+  if (opts.strict) {
+    const s = titleMatch(k, message);
+    if (!s) return null;
+    const related = new Set([...tokens(message)].flatMap((t) => GROUP_OF.get(t) ?? [t]));
+    let text = tidy(bestSentences(s.text, related, 1));
+    if (!text) return null;
+    // Una frase muy corta ("Marcas aliadas de A.AGORA BPO.") se completa con la siguiente (la lista de aliados),
+    // salvo que la siguiente sea otro tema con su propia etiqueta ("Recuperación de Cartera: …").
+    const sentences = splitSentences(s.text);
+    const next = sentences[sentences.findIndex((x) => text.endsWith(tidy(x))) + 1];
+    if (text.length < 60 && next && !LABELED.test(next)) text = tidy(`${text} ${next}`).slice(0, 480);
+    // El tema va al inicio para que se lea como respuesta ("Asesoría Legal: Acompañamiento jurídico…"), salvo que la
+    // frase ya traiga su etiqueta ("Quiénes somos: …").
+    const title = s.title.trim();
+    if (!LABELED.test(text) && !normalize(text).startsWith(normalize(title))) text = `${title}: ${text}`;
+    return { section: s, text: withReferencedContact(k, text) };
+  }
   const q = new Set(tokens(message));
   if (q.size === 0) return null;
   // Cada palabra de la pregunta es un "concepto" que se cumple con ella o con cualquiera de sus sinónimos.
@@ -348,36 +745,27 @@ export function extractiveAnswer(k: Knowledge, message: string, minScore: number
     const body = new Set(tokens(s.text));
     let score = 0;
     let hits = 0;
-    let inTitleAll = true;
     for (const c of concepts) {
       const inTitle = [...c].some((w) => title.has(w));
       const inBody = [...c].filter((w) => body.has(w)).length; // varios sinónimos en el texto suman más evidencia
       score += (inTitle ? 2 : 0) + Math.min(inBody, 2);
       if (inTitle || inBody > 0) hits++;
-      if (!inTitle) inTitleAll = false;
     }
-    // Estricto: TODOS los conceptos de la pregunta están en el título de la sección ("¿qué es la asesoría legal?" →
-    // "Asesoría Legal"). Evita citar una frase que solo comparte una palabra suelta con la pregunta.
-    if (opts.strict && !inTitleAll) continue;
     if (score >= minScore && hits / concepts.length >= minCoverage && (!best || score > best.score)) best = { s, score };
   }
   if (!best) return null;
-  let text = tidy(bestSentences(best.s.text, words, opts.strict ? 1 : 2));
-  if (opts.strict) {
-    // Una frase muy corta ("Marcas aliadas de A.AGORA BPO.") se completa con la siguiente (la lista de aliados).
-    const sentences = best.s.text.split(/(?<=[.!?])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
-    const at = sentences.findIndex((x) => text.endsWith(x));
-    if (text.length < 60 && at >= 0 && sentences[at + 1]) text = tidy(`${text} ${sentences[at + 1]}`).slice(0, 480);
-    // El tema va al inicio para que se lea como respuesta: "Asesoría Legal: Acompañamiento jurídico…".
-    const title = best.s.title.trim();
-    const titleWords = new Set(tokens(title));
-    if (concepts.some((c) => [...c].some((w) => titleWords.has(w))) && !normalize(text).startsWith(normalize(title))) text = `${title}: ${text}`;
-  }
-  return { section: best.s, text };
+  return { section: best.s, text: tidy(bestSentences(best.s.text, words, 2)) };
 }
 
 /** "¿Y eso?", "pero en Bogotá…": depende de lo anterior y no se responde con una sección suelta. */
 const FOLLOW_UP_RE = /^(y|e|o|pero|entonces|tambien|ademas|osea|o sea|eso|esa|ese|esos|esas|esto|ahi|alli|alla|igual|lo mismo)\b/;
+/**
+ * Busca empleo: "busco trabajo", "información sobre trabajo", "¿hay vacantes?", "quiero enviar mi hoja de vida",
+ * "¿están contratando?", "me gustaría trabajar en AAgora", "quiero trabajar como asesor".
+ */
+const JOB_QUERY = /\b(busco|buscando|necesito|quiero|hay|tienen|informacion (de|sobre)|ofertas? de|oportunidad(es)? de) (un |una )?(trabajo|empleo)\b|\b(trabajar con ustedes|hoja de vida|enviar (mi )?(cv|curriculum))\b|\b(quiero|quisiera|me gustaria|me interesa|deseo|busco|como (puedo|hago para)) (trabajar|laborar|aplicar|postularme|vincularme)\b|\b(trabajar|laborar) (con|en|como|de|para)\b|\b(estan|estaran|siguen) (contratando|buscando personal)\b|\bcomo trabajo con ustedes\b/;
+/** Ajeno a la empresa: chistes, cultura general, pedidos de cambiar las reglas. */
+const OFFTOPIC_RE = /\b(chiste|chistes|adivinanza|adivinanzas|poema|poesia|cancion|canciones|receta de|recetas de|horoscopo|futbol|capital de|quien gano|traduce|traducir|ignora (tus|las|todas las) (instrucciones|reglas)|olvida (tus|las) (instrucciones|reglas)|cuentame algo (gracioso|divertido)|eres chatgpt)\b/;
 
 /** Palabras de enlace que un modelo agrega al parafrasear; no cuentan como contenido. */
 const GENERIC = new Set([
@@ -392,8 +780,12 @@ const NEGATIVE_CLAIM_RE = /\bno (proporciona|ofrece|cuenta|realiza|hace|tiene|ma
  * La respuesta del modelo debe apoyarse en la página: sin afirmaciones negativas que la página no hace y con
  * al menos la mitad de sus palabras de contenido presentes en el sitio. Si no, se trata como "no publicado".
  */
+/** "…; el horario no aparece publicado en el sitio": decir qué NO está publicado no se inventa nada. */
+const NOT_PUBLISHED_CLAUSE = /\b(no (aparece|esta|se encuentra|figura|viene|hay|tenemos|contamos con|publicamos|se publica)\b.{0,40}\b(publicad[oa]s?|en (el|nuestro|este) (sitio|portal)|en (la|nuestra|esta) pagina)|no (aparece|esta|se encuentra|figura|viene) (publicad[oa]s?|en (el|nuestro) sitio|en la pagina)|no (lo|la|los|las) (publica|publicamos|menciona|indica)|el sitio no (lo |la )?(publica|menciona|indica|dice|aparece|figura|tiene)|no tengo (esa |ese )?(informacion|dato)|no (esta|estan) disponibles? en el sitio)\b/;
+
 export function isGrounded(answer: string, k: Knowledge): boolean {
-  const na = normalize(answer);
+  // Las partes que solo dicen que algo no está publicado no cuentan para comprobar el resto.
+  const na = normalize(answer.split(/(?<=[.;!?])\s+|;\s*|,\s*(?=pero\b|aunque\b|sin embargo\b)/).filter((c) => !NOT_PUBLISHED_CLAUSE.test(normalize(c))).join(' '));
   if (NEGATIVE_CLAIM_RE.test(na) && !NEGATIVE_CLAIM_RE.test(normalize(k.full))) return false;
   const words = [...new Set(na.split(' ').filter((w) => w.length >= 5).map((w) => w.slice(0, 5)).filter((w) => !GENERIC.has(w)))];
   if (words.length < 3) return true;
@@ -502,7 +894,8 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
         idempotencyKey: wallet ? `chat-handoff-${wallet.key}` : 'chat-handoff',
         portfolioKeyHint: wallet?.key,
       }, deps.notify);
-      return { type: 'handoff_offer', reason, message: `${lead} ${pick(CLOSINGS)}`, waUrl: r.handoff.wa_url, handoffId: r.handoff.id };
+      const closing = NAMES_ADVISOR.test(lead) ? pick(CLOSINGS_AFTER_ADVISOR) : pick(CLOSINGS);
+      return { type: 'handoff_offer', reason, message: `${lead} ${closing}`, waUrl: r.handoff.wa_url, handoffId: r.handoff.id };
     } catch (e) {
       if (e instanceof HttpError && e.code === 'no_advisor_available') return { type: 'fallback', reason, message: NONE };
       throw e;
@@ -510,6 +903,11 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   };
 
   const nm = normalize(message);
+  // Lo que se busca en el sitio: el tema, sin saludo, sin "no necesito asesor" y sin los datos del visitante
+  // ("me llamo Ana, ¿qué servicios ofrecen?" no pide la línea telefónica por "llamo"). Para los datos de contacto se deja
+  // de dónde es ("vivo en Cali, ¿tienen sede aquí?"); para lo demás se quita ("soy de Medellín, ¿qué servicios tienen?").
+  const topic = topicText(withoutVisitorData(message)) || nm;
+  const forMatch = topic.replace(USER_PLACE, ' ').replace(NATIONALITY, ' ').replace(/\s+/g, ' ').trim() || topic;
   // Reglas fijas, en el orden de prioridad de intents.ts (una sola fuente para el chat clásico y el chat en vivo).
   const intent = classify(message);
   if (intent === 'identity') return { type: 'answer', message: identityText(company) };
@@ -517,12 +915,19 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   if (intent === 'human') return toAdvisor(pick(HUMAN_LEADS), 'human');
   if (intent === 'sensitive') return toAdvisor(pick(SENSITIVE_LEADS), 'sensitive');
   if (intent === 'greeting') {
-    return { type: 'answer', message: deps.live?.name ? `¡Hola, ${deps.live.name.split(' ')[0]}! ¿En qué puedo ayudarte?` : `¡Hola! Soy el asistente de ${company.name}. ¿En qué puedo ayudarte?` };
+    return { type: 'answer', message: deps.live?.name ? `¡Hola, ${deps.live.name.split(' ')[0]}! ¿En qué puedo ayudarte?` : tidy(`¡Hola! Soy el asistente de ${companyName(company)}. ¿En qué puedo ayudarte?`) };
   }
   if (intent === 'help') return { type: 'answer', reason: 'clarify', message: helpText() };
+  // Chistes, cultura general o "ignora tus instrucciones": se redirige sin gastar el modelo (aunque no haya contenido).
+  if (OFFTOPIC_RE.test(nm)) return { type: 'answer', reason: 'offtopic', message: offTopicText(company) };
+
+  /** Lo que se dice al pasar con un asesor sin respuesta: a una queja o a algo que cuenta no se le habla de "esa información". */
+  const leadFor = () => (isComplaint(message) ? 'Lamento el inconveniente; un asesor puede revisarlo contigo.'
+    : !looksLikeQuestion(message) ? 'Un asesor puede ayudarte con eso.' : notPublished());
 
   const knowledge = await loadKnowledge(deps.db, company);
-  if (!knowledge) return toAdvisor(notPublished(), 'not_found');
+  // Sin contenido sincronizado no hay qué citar: el chat en vivo responde como sin modelo (sabe si es una queja o una pregunta).
+  if (!knowledge) return deps.liveEscalation ? { type: 'fallback', reason: 'unavailable', message: '' } : toAdvisor(leadFor(), 'not_found');
 
   const link = (section: ChatbotContent['sections'][number]): ChatReply['link'] => {
     if (!company.content_url) return undefined;
@@ -533,8 +938,11 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
     }
   };
 
+  // "¿Este número es de ustedes?" con un número que publica la empresa: se confirma con el sitio.
+  const ours = companyNumberAnswer(knowledge, message);
+  if (ours) return { type: 'answer', message: ours.text, link: link(ours.section) };
   // Datos de contacto publicados en el sitio (teléfono, correo, dirección, horario): respuesta directa, sin modelo.
-  const contact = contactAnswer(knowledge, message);
+  const contact = contactAnswer(knowledge, topic);
   if (contact) return { type: 'answer', message: contact.text, link: link(contact.section) };
 
   // Una pregunta repetida (sin contexto previo) se responde al instante; solo se guardan respuestas del sitio.
@@ -548,10 +956,15 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   };
 
   // Atajo sin modelo: si una sección del sitio responde claramente la pregunta (todo lo que pregunta está en su
-  // título), se cita al instante y no se gasta cuota del modelo. Solo con preguntas que se entienden solas.
-  const standalone = history.length === 0 || (!!deps.live && !FOLLOW_UP_RE.test(nm));
+  // título), se cita al instante y no se gasta cuota del modelo. Solo con preguntas que se entienden solas
+  // ("¿y en Bogotá?" depende de lo anterior); en el widget viejo, con historial, primero se consulta al modelo.
+  // "Busco trabajo" pregunta por empleo.
+  const selfContained = history.length === 0 || !FOLLOW_UP_RE.test(forMatch);
+  const standalone = history.length === 0 || (!!deps.live && selfContained);
+  // "¿Pueden trabajar para mi empresa en la cobranza?" quiere contratar el servicio: no busca empleo.
+  const strictText = (JOB_QUERY.test(forMatch) || JOB_SENSE.test(forMatch)) && !COMMERCIAL_RE.test(forMatch) ? 'empleo' : forMatch;
   if (deps.fastScore > 0 && standalone) {
-    const fast = extractiveAnswer(knowledge, message, deps.fastScore, 0.66, { strict: true });
+    const fast = extractiveAnswer(knowledge, strictText, deps.fastScore, 0.66, { strict: true });
     if (fast) return remember({ type: 'answer', message: fast.text, link: link(fast.section) });
   }
 
@@ -575,10 +988,14 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
     else if (!/no configurado|Presupuesto/.test(e.message)) console.warn(`[chat] modelo no disponible: ${e.message}`);
     // Sin modelo (no configurado, caído o sin cuota): solo se cita el sitio si una sección responde claramente la
     // pregunta; una frase que apenas comparte una palabra confunde más de lo que ayuda.
-    const found = extractiveAnswer(knowledge, message, 2, 0.66, { strict: true });
+    // Sin modelo, también desde el segundo mensaje del widget viejo, si la pregunta se entiende sola.
+    const found = selfContained ? extractiveAnswer(knowledge, strictText, 2, 0.66, { strict: true }) : null;
     if (found) return { type: 'answer', message: found.text, link: link(found.section) };
+    // "¿Cuál es el teléfono y el horario?": se da lo que sí está publicado y se dice qué no; un asesor confirma lo demás.
+    const partial = contactAnswer(knowledge, topic, { partial: true });
+    if (partial) return toAdvisor(partial.text, 'not_found');
     if (deps.liveEscalation) return { type: 'fallback', reason: 'unavailable', message: '' };
-    const base = await toAdvisor(notPublished(), 'unavailable');
+    const base = await toAdvisor(leadFor(), 'unavailable');
     return { ...base, type: 'fallback' };
   }
 
@@ -594,7 +1011,8 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
     const clarifying = out.intent === 'clarify' && /\?\s*$/.test(text) && text.length <= 240;
     if (!clarifying && !isGrounded(text, knowledge)) return toAdvisor(notPublished(), 'not_found');
     const section = out.sectionSlug ? knowledge.content.sections.find((s) => s.slug === out.sectionSlug) : undefined;
-    return remember({ type: 'answer', reason: clarifying ? 'clarify' : undefined, message: tidy(text.slice(0, 1000)), link: section ? link(section) : undefined });
+    const answer = clarifying ? tidy(text.slice(0, 1000)) : withReferencedContact(knowledge, tidy(text.slice(0, 1000)));
+    return remember({ type: 'answer', reason: clarifying ? 'clarify' : undefined, message: answer, link: section ? link(section) : undefined });
   }
 
   // Si el modelo decide pasar con un asesor, su frase (relacionada con la pregunta) abre el mensaje; si no es confiable, una alternativa fija.
@@ -602,4 +1020,6 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
 }
 
 /** Frase de cierre para ofrecer un asesor sin repetir la palabra si la frase anterior ya la dice. */
-export const offerAdvisor = (lead: string) => joinText(lead, /\basesor/i.test(lead) ? '¿Quieres que te comunique con uno?' : '¿Quieres que te comunique con un asesor?');
+export const offerAdvisor = (lead: string) => joinText(lead, NAMES_ADVISOR.test(lead) ? '¿Quieres que te comunique con uno?' : '¿Quieres que te comunique con un asesor?');
+/** La frase nombra a un asesor ("asesor", "asesora", "asesores"); "Asesoría Legal" no cuenta. */
+export const NAMES_ADVISOR = /\basesor(a|es)?(?![\p{L}])/iu;

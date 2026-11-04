@@ -162,7 +162,7 @@ export function liveChatController(deps: AppDeps) {
           keepAdvisor = !!authorized.rows[0];
         }
         const conversation = (await q.query<any>(
-          `UPDATE chat_sessions SET portfolio_id = $3,
+          `UPDATE chat_sessions SET portfolio_id = $3, portfolio_auto = false,
              status = CASE WHEN $4::boolean THEN status ELSE 'EN_ESPERA_ASESOR' END,
              current_advisor_id = CASE WHEN $4::boolean THEN current_advisor_id ELSE NULL END,
              waiting_since = CASE WHEN $4::boolean THEN waiting_since ELSE now() END, updated_at = now()
@@ -183,18 +183,39 @@ export function liveChatController(deps: AppDeps) {
         ownerOrManager(req.admin!, before);
         if (before.status !== 'TOMADO_POR_ASESOR') throw conflict('La conversación no está tomada');
         const status = body.destination === 'bot' ? 'BOT_ACTIVO' : 'EN_ESPERA_ASESOR';
+        // De vuelta a la cola sin cartera (o con una desactivada) recibe la única activa o la cartera por defecto, como
+        // cuando el bot la pasa a la cola: sin cartera ningún asesor la vería.
+        const queuePortfolio = `(SELECT p.id FROM portfolios p WHERE p.company_id = $2 AND p.active
+            AND (p.is_default OR (SELECT count(*) FROM portfolios x WHERE x.company_id = $2 AND x.active) = 1)
+            ORDER BY p.is_default DESC LIMIT 1)`;
+        const needsPortfolio = `($3 = 'EN_ESPERA_ASESOR' AND (portfolio_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM portfolios p WHERE p.id = chat_sessions.portfolio_id AND p.company_id = $2 AND p.active)))`;
         const conversation = (await q.query<any>(
           `UPDATE chat_sessions SET status = $3, current_advisor_id = NULL, pending_transfer_to = NULL, taken_at = NULL,
-             waiting_since = CASE WHEN $3 = 'EN_ESPERA_ASESOR' THEN now() ELSE NULL END, updated_at = now()
+             waiting_since = CASE WHEN $3 = 'EN_ESPERA_ASESOR' THEN now() ELSE NULL END,
+             portfolio_auto = CASE WHEN ${needsPortfolio} AND ${queuePortfolio} IS NOT NULL THEN true ELSE portfolio_auto END,
+             portfolio_id = CASE WHEN ${needsPortfolio} THEN COALESCE(${queuePortfolio}, portfolio_id) ELSE portfolio_id END,
+             updated_at = now()
            WHERE id = $1 AND company_id = $2 RETURNING *`, [before.id, cid(req), status],
+        )).rows[0];
+        // El visitante ve qué pasó, y el bot sabe que la atención anterior terminó: un "gracias" ya no lo devuelve a
+        // la cola ni retoma una toma de datos vieja.
+        const notice = body.destination === 'bot'
+          ? 'El asesor finalizó la atención. Si necesitas algo más, puedes seguir escribiendo aquí.'
+          : 'Tu conversación volvió a la fila de atención; un asesor continuará contigo por este mismo chat.';
+        const message = (await q.query<any>(
+          `INSERT INTO chat_messages (company_id, chat_session_id, sender_type, content, metadata)
+           VALUES ($1,$2,'SYSTEM',$3,jsonb_build_object('kind','release','destination',$4::text)) RETURNING *`,
+          [cid(req), before.id, notice, body.destination],
         )).rows[0];
         await q.query(`INSERT INTO chat_assignments (company_id, chat_session_id, advisor_id, action) VALUES ($1,$2,$3,$4)`,
           [cid(req), before.id, before.current_advisor_id, body.destination === 'bot' ? 'RELEASE_BOT' : 'RELEASE_QUEUE']);
         await auditChat(q, req.admin!, cid(req), before.id, 'RELEASE', before, conversation);
-        return conversation;
+        return { conversation, message };
       });
-      publish(cid(req), 'chat_status', { conversationId: result.id, status: result.status });
-      res.json(result);
+      publish(cid(req), 'chat_status', { conversationId: result.conversation.id, status: result.conversation.status });
+      publish(cid(req), 'chat_message', { conversationId: result.conversation.id, messageId: result.message.id, sender: 'SYSTEM' });
+      res.json(result.conversation);
     },
 
     async transfer(req: Request, res: Response) {

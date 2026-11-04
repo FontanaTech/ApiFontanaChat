@@ -1,5 +1,6 @@
 import type { Queryable } from '../db';
 import { normalize } from '../utils/text';
+import { matchPortfolio } from '../services/visitorData';
 
 export interface Portfolio {
   id: string;
@@ -87,16 +88,18 @@ export async function updatePortfolio(
 }
 
 /**
- * Cartera cuyas palabras (alias) aparecen en el texto del visitante; si varias coinciden gana la palabra más larga.
- * Solo carteras activas. Se usa para pasar al visitante con los asesores de la cartera que menciona.
+ * Cartera que el visitante menciona: primero por sus alias (gana el más largo) y, si ninguno aparece, por su nombre
+ * o clave ("asesor de Offcorss" aunque "offcorss" no esté entre los alias). Solo carteras activas. Se usa para pasar
+ * al visitante con los asesores de la cartera que menciona.
  */
 export async function findPortfolioByText(q: Queryable, companyId: string, text: string): Promise<Portfolio | null> {
   const t = ` ${normalize(text)} `;
+  const portfolios = await listPortfolios(q, companyId, true);
   let best: { p: Portfolio; len: number } | null = null;
-  for (const p of await listPortfolios(q, companyId, true)) {
+  for (const p of portfolios) {
     for (const a of p.aliases) {
       if (t.includes(` ${a} `) && (!best || a.length > best.len)) best = { p, len: a.length };
     }
   }
-  return best?.p ?? null;
+  return best?.p ?? matchPortfolio(text, portfolios) ?? null;
 }

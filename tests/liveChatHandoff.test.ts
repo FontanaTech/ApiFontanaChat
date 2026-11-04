@@ -150,7 +150,8 @@ describe('tomar control sin elegir asesor', () => {
 describe('el bot sigue ayudando hasta que un asesor toma el chat', () => {
   it('si no sabe responder ofrece un asesor; si el visitante contesta con sus datos pasa a la cola y sigue conversando', async () => {
     const guest = await publicClient(env, fixture.slug, fixture.origin);
-    const unknown = await guest.post('/chat', { message: 'Skdjbdd', live: true });
+    // Una pregunta que no puede responder (a lo que no se entiende, como "Skdjbdd", le pide que cuente más).
+    const unknown = await guest.post('/chat', { message: '¿Atienden los domingos?', live: true });
     expect(unknown.body).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     // Ofrece, no obliga: no pide datos ni lo pasa a la cola sin que el visitante quiera.
     expect(unknown.body.message).toMatch(/¿Quieres que te comunique con un asesor\?$/);
@@ -196,7 +197,7 @@ describe('continuidad al pedir los datos', () => {
 
     // "ok" nunca es un nombre y el bot no vuelve a preguntar el nombre.
     const ok = await guest.post('/chat', { message: 'ok', live: true });
-    expect(ok.body.message).toMatch(/Con gusto/);
+    expect(ok.body.message).toMatch(/Con gusto|Para servirte/);
     const again = await guest.post('/chat', { message: 'que eres', live: true });
     expect(again.body.message).not.toMatch(/Con quién tengo el gusto/);
     const snap = await guest.get('/conversation');
