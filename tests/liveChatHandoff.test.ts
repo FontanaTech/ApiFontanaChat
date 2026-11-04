@@ -248,3 +248,23 @@ describe('reglas ordenadas: el bot entiende los datos aunque vengan en frases la
   });
 
 });
+
+describe('cerrar desde el panel', () => {
+  it('se puede cerrar un chat que atiende el bot y uno que tomó el panel', async () => {
+    const withBot = await publicClient(env, fixture.slug, fixture.origin);
+    const first = await withBot.post('/chat', { message: 'hola', live: true });
+    const botChat = first.body.conversation.id;
+    expect(first.body.conversation.status).toBe('BOT_ACTIVO');
+    const closedBot = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${botChat}/close`, { reason: 'resuelto' });
+    expect(closedBot.status).toBe(200);
+    expect(closedBot.body.status).toBe('CERRADO');
+
+    const taken = await publicClient(env, fixture.slug, fixture.origin);
+    const second = await taken.post('/chat', { message: 'hola', live: true });
+    const takenChat = second.body.conversation.id;
+    expect((await manager.post(`/companies/${fixture.companyId}/chat-sessions/${takenChat}/take`, {})).status).toBe(200);
+    const closedTaken = await manager.post(`/companies/${fixture.companyId}/chat-sessions/${takenChat}/close`, { reason: 'informacion_entregada' });
+    expect(closedTaken.body.status).toBe('CERRADO');
+    expect((await manager.post(`/companies/${fixture.companyId}/chat-sessions/${takenChat}/close`, { reason: 'otro' })).status).toBe(409);
+  });
+});

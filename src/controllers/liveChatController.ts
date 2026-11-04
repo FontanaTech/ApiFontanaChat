@@ -306,7 +306,9 @@ export function liveChatController(deps: AppDeps) {
       const body = parse(v.closeChatBody, req.body);
       const result = await deps.db.tx(async (q) => {
         const before = await lockConversation(q, cid(req), chatId(req));
-        ownerOrManager(req.admin!, before);
+        // Un chat con asesor lo cierra su dueño o un administrador; uno que atiende el bot, quien tenga acceso a su cartera.
+        if (before.status === 'TOMADO_POR_ASESOR') ownerOrManager(req.admin!, before);
+        else if (!(await advisorCanAccess(q, req.admin!, cid(req), before.portfolio_id))) throw forbidden('No tienes acceso a esta cartera');
         if (before.status === 'CERRADO') throw conflict('La conversación ya está cerrada');
         const conversation = (await q.query<any>(
           `UPDATE chat_sessions SET status = 'CERRADO', close_reason = $3, summary = COALESCE(NULLIF($4,''), summary),

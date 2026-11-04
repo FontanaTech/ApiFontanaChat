@@ -7,6 +7,7 @@ interface Conversation { id: string; visitor_name: string | null; document: stri
 interface Message { id: string; sender_type: 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM'; advisor_name?: string | null; content: string; created_at: string; metadata?: { waUrl?: string } }
 interface Advisor { id: string; name: string; status: 'available' | 'busy' | 'offline'; portfolio_ids: string[]; active_chats: number; chats_today: number; last_activity_at: string | null }
 
+const CLOSE_REASONS: Array<[string, string]> = [['resuelto', 'Resuelto'], ['informacion_entregada', 'Información entregada'], ['remitido', 'Remitido'], ['abandono', 'Abandono'], ['otro', 'Otro']];
 const LABELS: Record<Status, string> = { BOT_ACTIVO: 'Bot activo', EN_ESPERA_ASESOR: 'En espera', TOMADO_POR_ASESOR: 'En vivo', REMITIDO_WHATSAPP: 'Remitido', CERRADO: 'Cerrado', ABANDONADO: 'Abandonado' };
 const ago = (n: number) => n < 60 ? `${n}s` : n < 3600 ? `${Math.floor(n / 60)} min` : `${Math.floor(n / 3600)} h`;
 
@@ -18,6 +19,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
   const [draft, setDraft] = useState('');
   const [customWa, setCustomWa] = useState(false);
   const [waText, setWaText] = useState('');
+  const [closeReason, setCloseReason] = useState('resuelto');
   const setFilter = (key: keyof typeof filters, value: string | boolean) => setFilters((previous) => ({ ...previous, [key]: value }));
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -95,6 +97,12 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
         {current && <>
           <header className="conversation-header">
             <div><h3>{current.visitor_name || `Sesión ${current.id.slice(0, 8)}`}</h3><p className="muted">{current.document ? `Documento ${current.document} · ` : ''}{current.portfolio_name || 'Sin cartera'} · {current.status === 'TOMADO_POR_ASESOR' ? `Atendido en vivo por ${current.advisor_name || 'un asesor'}` : LABELS[current.status]}</p></div>
+            {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <div className="close-chat">
+              <select aria-label="Motivo del cierre" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}>
+                {CLOSE_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+              <button className="danger" onClick={() => { if (window.confirm('¿Cerrar esta conversación?')) void run('/close', { reason: closeReason }); }}>Cerrar chat</button>
+            </div>}
           </header>
           <div className="messages" aria-live="polite">
             {detail.data?.messages.map((message) => <article key={message.id} className={`message ${message.sender_type.toLowerCase()}`}>
@@ -125,10 +133,6 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
                 </>}
                 {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
               </>}
-            <button className="danger" onClick={() => {
-              const reason = window.prompt('Motivo: resuelto, remitido, abandono, informacion_entregada u otro', 'resuelto');
-              if (reason && ['resuelto', 'remitido', 'abandono', 'informacion_entregada', 'otro'].includes(reason)) void run('/close', { reason });
-            }}>Cerrar</button>
             {current.portfolio_id && <details className="more-actions"><summary>Más opciones</summary>
               <div className="chat-actions">
                 <select aria-label="Cambiar cartera" value={portfolio || current.portfolio_id || ''} onChange={(e) => setPortfolio(e.target.value)}>

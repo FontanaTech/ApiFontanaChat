@@ -176,6 +176,8 @@ button.conversation.active { box-shadow: inset 3px 0 var(--primary); }
 .conversation-panel { min-width: 0; display: grid; grid-template-rows: auto minmax(220px, 1fr) auto auto; overflow: hidden; }
 .conversation-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .conversation-header h3, .conversation-header p { margin: 0; }
+.close-chat { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.close-chat select, .close-chat button { margin: 0; }
 .compact { margin: 0; }
 .messages { overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; background: color-mix(in srgb, var(--bg) 42%, var(--card)); }
 .message { max-width: 78%; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); align-self: flex-start; }
