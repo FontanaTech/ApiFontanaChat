@@ -97,42 +97,23 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
         {current && <>
           <header className="conversation-header">
             <div><h3>{current.visitor_name || `Sesión ${current.id.slice(0, 8)}`}</h3><p className="muted">{current.document ? `Documento ${current.document} · ` : ''}{current.portfolio_name || 'Sin cartera'} · {current.status === 'TOMADO_POR_ASESOR' ? `Atendido en vivo por ${current.advisor_name || 'un asesor'}` : LABELS[current.status]}</p></div>
-            {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <div className="close-chat">
+          </header>
+          {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <div className="chat-actions chat-actions-top">
+            {!current.portfolio_id && <label className="step">Cartera
+                <select aria-label="Seleccionar cartera" value="" onChange={(e) => { if (e.target.value) void action.run(() => api('PATCH', `/companies/${companyId}/chat-sessions/${selected}/portfolio`, { portfolioId: e.target.value })); }}>
+                  <option value="">Seleccionar cartera</option>{portfolios.data?.items.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>}
+            {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <button className="primary" onClick={() => run('/take')}>Tomar control</button>}
+            {current.portfolio_id && <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>}
+            {current.status === 'TOMADO_POR_ASESOR' && <button onClick={() => run('/release', { destination: 'bot' })}>Devolver al bot</button>}
+            {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
+            <div className="close-chat">
               <select aria-label="Motivo del cierre" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}>
                 {CLOSE_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
               <button className="danger" onClick={() => { if (window.confirm('¿Cerrar esta conversación?')) void run('/close', { reason: closeReason }); }}>Cerrar chat</button>
-            </div>}
-          </header>
-          <div className="messages" aria-live="polite">
-            {detail.data?.messages.map((message) => <article key={message.id} className={`message ${message.sender_type.toLowerCase()}`}>
-              <small>{message.sender_type === 'USER' ? 'Usuario' : message.sender_type === 'ADVISOR' ? message.advisor_name || 'Asesor' : message.sender_type === 'BOT' ? 'Chatbot' : 'Sistema'} · {fmt(message.created_at)}</small>
-              <p>{message.content}</p>
-              {message.metadata?.waUrl && <a href={message.metadata.waUrl} target="_blank" rel="noreferrer">Abrir WhatsApp</a>}
-            </article>)}
-          </div>
-          {current.status === 'TOMADO_POR_ASESOR' && <div className="composer">
-            <textarea aria-label="Respuesta" rows={3} maxLength={4000} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} placeholder="Escribe una respuesta…" />
-            <button className="primary" disabled={!draft.trim()} onClick={send}>Enviar</button>
-          </div>}
-          {!['CERRADO', 'REMITIDO_WHATSAPP'].includes(current.status) && <div className="chat-actions">
-            {!current.portfolio_id
-              ? <label className="step">1. Indica la cartera
-                <select aria-label="Seleccionar cartera" value="" onChange={(e) => { if (e.target.value) void action.run(() => api('PATCH', `/companies/${companyId}/chat-sessions/${selected}/portfolio`, { portfolioId: e.target.value })); }}>
-                  <option value="">Seleccionar cartera</option>{portfolios.data?.items.filter((p) => p.active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </label>
-              : <>
-                {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <>
-                  <button className="primary" onClick={() => run('/take')}>Tomar control</button>
-                  <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>
-                </>}
-                {current.status === 'TOMADO_POR_ASESOR' && <>
-                  <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>
-                  <button onClick={() => run('/release', { destination: 'bot' })}>Devolver al bot</button>
-                </>}
-                {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
-              </>}
+            </div>
             {current.portfolio_id && <details className="more-actions"><summary>Más opciones</summary>
               <div className="chat-actions">
                 <select aria-label="Cambiar cartera" value={portfolio || current.portfolio_id || ''} onChange={(e) => setPortfolio(e.target.value)}>
@@ -150,6 +131,17 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
                 {customWa && <input aria-label="Mensaje de WhatsApp" maxLength={500} placeholder="Mensaje que verá el cliente en WhatsApp" value={waText} onChange={(e) => setWaText(e.target.value)} />}
               </div>
             </details>}
+          </div>}
+          <div className="messages" aria-live="polite">
+            {detail.data?.messages.map((message) => <article key={message.id} className={`message ${message.sender_type.toLowerCase()}`}>
+              <small>{message.sender_type === 'USER' ? 'Usuario' : message.sender_type === 'ADVISOR' ? message.advisor_name || 'Asesor' : message.sender_type === 'BOT' ? 'Chatbot' : 'Sistema'} · {fmt(message.created_at)}</small>
+              <p>{message.content}</p>
+              {message.metadata?.waUrl && <a href={message.metadata.waUrl} target="_blank" rel="noreferrer">Abrir WhatsApp</a>}
+            </article>)}
+          </div>
+          {current.status === 'TOMADO_POR_ASESOR' && <div className="composer">
+            <textarea aria-label="Respuesta" rows={3} maxLength={4000} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} placeholder="Escribe una respuesta…" />
+            <button className="primary" disabled={!draft.trim()} onClick={send}>Enviar</button>
           </div>}
         </>}
       </section>
