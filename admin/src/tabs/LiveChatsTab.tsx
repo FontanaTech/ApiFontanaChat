@@ -107,7 +107,7 @@ export function LiveChatsTab({ companyId, admin }: { companyId: string; admin: A
             {['BOT_ACTIVO', 'EN_ESPERA_ASESOR', 'ABANDONADO'].includes(current.status) && <button className="primary" onClick={() => run('/take')}>Tomar control</button>}
             {current.portfolio_id && <button onClick={remitWhatsapp}>Transferir a WhatsApp</button>}
             {current.status === 'TOMADO_POR_ASESOR' && <button onClick={() => run('/release', { destination: 'bot' })}>Devolver al bot</button>}
-            {current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
+            {!!admin.advisor_id && current.pending_transfer_to === admin.advisor_id && <button className="primary" onClick={() => run('/accept-transfer')}>Aceptar transferencia</button>}
             <div className="close-chat">
               <select aria-label="Motivo del cierre" value={closeReason} onChange={(e) => setCloseReason(e.target.value)}>
                 {CLOSE_REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
