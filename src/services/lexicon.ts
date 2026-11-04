@@ -174,9 +174,51 @@ const ROLE_WORDS = words(`
 `);
 export const TITLES = new Set([...PERSON_TITLES, ...ROLE_TITLES]);
 
+/**
+ * Lo que no es un nombre y faltaba en el léxico amplio: groserías e insultos ("gonorrea", "idiota"), apelativos que
+ * nunca son un nombre ("princesa", "negrita"), creencias y cualidades ("soy cristiana", "soy honesto"), oficios que
+ * también son apellidos ("soy pastor": tras un nombre de pila siguen siendo apellido, "Pedro Pastor") y palabras que
+ * terminan en -is ("tesis", "análisis").
+ */
+const EXTRA_COMMON = words(`
+  gonorrea gonorreas hijueputa hijueputas hijuepucha jueputa jueputas juepucha hp hpta hptas huevon huevona huevones
+  guevon guevona guevones webon weon pirobo piroba pirobos pendejo pendeja pendejos maricon maricona maricones puta puto
+  putas perra perras zorra zorras bobo boba bobos tonto tonta tontos idiota idiotas imbecil imbeciles sapo sapa sapos
+  rata ratas careverga carechimba verga vergas mamon mamona lambon lambona lambones sinverguenza sinverguenzas ome
+  ratero ratera bruto bruta cerdo cerda culo culicagado malparida cabron cabrona cretino cretina asqueroso asquerosa
+  loca loco locos tarado tarada mongolico baboso babosa cansona cansones metiche
+  princesa princeso reinita cielito negrita negrito belleza oro
+  cristiana cristiano cristianos creyente catolica catolico evangelica evangelico adventista honesta honesto sincero
+  sincera franca fiel monja monje misionero misionera minero minera rector rectora labradora labrador leal
+  tesis analisis dosis oasis chasis sintesis parentesis hipotesis
+`);
+
+/**
+ * Nombres que también describen a la persona o le hablan ("soy franco", "soy clara con usted", "soy pastor", "mi
+ * reina"): en minúscula, tras "soy" o como respuesta suelta, no son el nombre; con mayúscula ("soy Franco", "Reina
+ * Gómez", "Pastor Hernández") o con apellido sí.
+ */
+export const DESCRIPTIVE_NAMES = new Set(words(`
+  clara claro dulce franco franca gentil modesto modesta justo justa amada amado benigno benigna bienvenido bienvenida
+  candida candido placido placida primitivo prospero serena sereno severo severa marino pastor pastora reina rey
+`));
+
+/**
+ * Apelativos de cariño o de trato ("linda", "mi reina", "veci", "parce"): en minúscula y sin "me llamo" le hablan al
+ * bot; no son el nombre del visitante. "Linda" o "Cielo" con mayúscula sí pueden serlo.
+ */
+export const ENDEARMENTS = new Set(words(`
+  linda lindo bella bello hermosa hermoso preciosa precioso princesa reina reinita rey cielo cielito corazon carino
+  querida querido mami papi mamita papito mamacita papacito mija mijo mijita mijito nena nene amor vida vecina vecino
+  veci parce parcero parcera hermano hermana mana mano manito sumerce patron patrona bebe negrita negrito gordita
+  gordito flaca flaco mona mono muneca muneco chiquita chiquito bonita bonito guapa guapo lindura belleza amiga amigo
+  cosita
+`));
+
 /** Palabras de uso diario (sin las marcas): una cartera que se llama así ("General", "Claro") es ambigua. */
 export const EVERYDAY = new Set([
   ...FUNCTION_WORDS, ...VERBS, ...CHAT_WORDS, ...DOMAIN_WORDS, ...ROLE_WORDS, ...TITLES, ...PERSON_CONDITIONS, ...words(GENERAL_WORDS),
+  ...EXTRA_COMMON,
 ]);
 /** Palabras que no son un nombre de pila. */
 export const COMMON = new Set([...EVERYDAY, ...BRANDS]);
@@ -234,6 +276,11 @@ export const FIRST_NAMES = new Set(words(`
   yesica yessenia yessica yohana yolanda yolima yomaira yorladis yuli yuliana yulieth yuliza yuly yurani yurany
   yurley yuri zenaida zoila zoraida zulma
   pascual dante brigitte odette lisette florencia valeria paz
+  yarlenis yarleidis yarledis leidys leidis leydis yuranis yuleidis yuleisi marelys marelis dayanis yerlis dairis
+  karelys karelis mileidis mileydis luzmeris darlis yurleidis nelis yeinis mairis glenis yoleidis yamiles ingris leida
+  leyda zaida onelis yulis yarelis yudis yudith eudis edilsa dalgis dilsa nayelis yeimis kendris kelys yuris yurlis
+  darlys yoiner yohanis dary dari darly maryuris neyla nely yaneris yenis dalys dayris yamith everth idalia idaly zully
+  yaditza yordi pastor reina rey
   ${MORE_FIRST_NAMES}
 `));
 

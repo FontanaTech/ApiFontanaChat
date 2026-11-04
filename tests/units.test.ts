@@ -1085,3 +1085,121 @@ describe('revisión 5 (léxico amplio, nov. 2026): palabras que no son nombres y
     expect(asked('Ana Segura')).toBe('Ana Segura');
   });
 });
+
+describe('revisión 6 (verificación nov. 2026): groserías, nombres en -is, correcciones, carteras y asunto', async () => {
+  const { extractVisitorData, namedPortfolios } = await import('../src/services/visitorData');
+  const { analyze, announcesQuestion, cancelOf, COMMERCIAL_RE, isSensitive, mentionsCase, refusedFields } = await import('../src/services/intents');
+  const { isComplaint, withoutUserPlace } = await import('../src/services/chat');
+  const { subjectText } = await import('../src/services/liveChat');
+  const asked = (m: string) => extractVisitorData(m, [], { asked: 'name' }).name;
+  const handoff = (m: string, missing: Array<'name' | 'document' | 'portfolio'> = ['name', 'document']) => extractVisitorData(m, [], { asked: 'handoff', missing }).name;
+  const free = (m: string) => extractVisitorData(m, [], { asked: null }).name;
+  const P4 = [
+    { key: 'general', name: 'General', aliases: [] }, { key: 'claro', name: 'Claro', aliases: [] },
+    { key: 'flamingo', name: 'Flamingo', aliases: ['almacenes flamingo'] }, { key: 'offcorss', name: 'Offcorss', aliases: [] },
+  ];
+
+  it('una grosería o un apelativo en minúscula no es el nombre', () => {
+    for (const m of ['gonorrea', 'hijueputa', 'idiota', 'Idiota', 'huevón', 'pirobo', 'princesa', 'reina', 'linda', 'bella', 'pastor']) expect(asked(m), m).toBeUndefined();
+    expect(handoff('ya le dije mi nombre, idiota', ['name'])).toBeUndefined();
+    expect(handoff('gonorrea 1020304050')).toBeUndefined();
+    for (const m of ['Linda', 'Cielo', 'rosa']) expect(asked(m), m).toBeTruthy();
+  });
+
+  it('"soy" con un adjetivo, una creencia o un oficio no es el nombre; un nombre sí', () => {
+    for (const m of ['soy pastor', 'soy cristiana', 'soy honesto', 'soy labrador', 'soy pastor de una iglesia, cc 1020304050']) expect(handoff(m, ['name']), m).toBeUndefined();
+    for (const m of ['le soy franco, ya no tengo cómo pagar', 'te soy clara: no voy a pagar esa deuda', 'soy franco, no puedo pagar esa deuda', 'soy pastora de una iglesia y no tengo cómo pagar']) {
+      expect(free(m), m).toBeUndefined();
+    }
+    expect(free('soy Franco, no puedo pagar')).toBe('Franco');
+    expect(free('soy rosa y quiero un asesor')).toBe('Rosa');
+    expect(handoff('Pastor Hernández 1020304050')).toBe('Pastor Hernández');
+    expect(handoff('Reina Gómez 43567890')).toBe('Reina Gómez');
+  });
+
+  it('nombres costeños en -is, "Leida" y un apellido común con mayúscula se guardan', () => {
+    expect(handoff('Yarlenis Pérez 43567890')).toBe('Yarlenis Pérez');
+    expect(handoff('Leidys Gómez, cc 43567890')).toBe('Leidys Gómez');
+    expect(handoff('Leida Ruiz 43567890')).toBe('Leida Ruiz');
+    expect(asked('Yuranis')).toBe('Yuranis');
+    expect(asked('gastritis')).toBeUndefined();
+    expect(handoff('Carlos Alemán')).toBe('Carlos Alemán');
+    expect(handoff('Laura Prueba')).toBe('Laura Prueba');
+    expect(extractVisitorData('Ana Claro 43567890', [], { asked: 'handoff', missing: ['name', 'document'], siteWords: new Set(['claro']) }).name).toBe('Ana');
+    expect(asked('Rosa Elena Tarde')).toBe('Rosa Elena');
+    expect(asked('Muchas gracias, Linda Tarde')).toBeUndefined();
+  });
+
+  it('el nombre de otra persona no es el del visitante; un apelativo o un saludo antes del nombre no lo tapan', () => {
+    for (const m of ['Carlos Mora me dijo que les escribiera', 'la abogada Marta Gómez me pidió que me comunicara', 'Pedro Gómez el de cartera me llamó ayer',
+      'Ana Ruiz es mi mamá, ella tiene la deuda', 'Jorge Pérez me recomendó este chat']) expect(handoff(m), m).toBeUndefined();
+    expect(handoff('Juan Pérez quiero saber mi saldo')).toBe('Juan Pérez');
+    expect(handoff('Juan Pérez es mi nombre')).toBe('Juan Pérez');
+    for (const m of ['ok linda, Juan Pérez 1020304050', 'listo mi reina, Juan Pérez 1020304050', 'bueno princesa, Juan Pérez 1020304050']) expect(handoff(m), m).toBe('Juan Pérez');
+    expect(asked('hola, ¿cómo estás? Luisa')).toBe('Luisa');
+    expect(asked('buenas tardes, ¿cómo le va? Martha Gómez')).toBe('Martha Gómez');
+    expect(asked('me dicen Toño')).toBe('Toño');
+    expect(asked('nel, gracias')).toBeUndefined();
+    expect(free('Ana López, mucho gusto')).toBe('Ana López');
+  });
+
+  it('corrige el nombre guardado ("Pedro no, Juan Gómez") y el documento sin decir "cédula"', () => {
+    for (const m of ['Pedro no, Juan Gómez', 'no, Juan Gómez', 'no Pedro, Juan Gómez']) {
+      const x = extractVisitorData(m, [], { asked: 'queue', missing: [], savedName: 'Pedro Gómez' });
+      expect([x.name, x.nameExplicit], m).toEqual(['Juan Gómez', true]);
+    }
+    for (const m of ['el número correcto es 1020304051', '1020304051 es el correcto', 'ese número está mal, es 1020304051', 'error, es 1020304051',
+      'lo escribí mal, es 1020304051', 'me faltó un número: 1020304051', 'mi número real es 1020304051', 'esa era la cédula vieja, la nueva es 1020304051']) {
+      const x = extractVisitorData(m, [], { asked: 'handoff', missing: ['name'] });
+      expect([x.document, x.documentExplicit], m).toEqual(['1020304051', true]);
+    }
+    expect(extractVisitorData('Luz Dary Cuesta 52111222', [], { asked: 'handoff', missing: ['name', 'document'] }).document).toBe('52111222');
+  });
+
+  it('carteras: "Claro y Flamingo" no se adivina, las marcas de pago y las correcciones con pausa cuentan', () => {
+    const pf = (m: string, ctx: object) => { const x = extractVisitorData(m, P4, ctx); return [x.portfolioKey, !!x.correction]; };
+    expect(pf('Claro y Flamingo', { asked: 'handoff', missing: ['portfolio'] })[0]).toBeUndefined();
+    expect(pf('tengo una deuda con flamingo y otra con offcorss', { asked: null })[0]).toBeUndefined();
+    for (const [m, key] of [['quiero un acuerdo de pago con flamingo', 'flamingo'], ['quiero negociar con Offcorss', 'offcorss'],
+      ['necesito un paz y salvo de Offcorss', 'offcorss'], ['necesito pagarle a Flamingo', 'flamingo']]) expect(pf(m, { asked: null })[0], m).toBe(key);
+    for (const [m, key] of [['no, la de Offcorss', 'offcorss'], ['no señor, es flamingo', 'flamingo'], ['Flamingo no, Offcorss', 'offcorss'], ['en realidad es de Offcorss', 'offcorss']]) {
+      expect(pf(m, { asked: 'queue', missing: [] }), m).toEqual([key, true]);
+    }
+    expect(namedPortfolios('ni Flamingo ni Offcorss', P4)).toEqual({ list: [P4[2], P4[3]], negated: true });
+  });
+
+  it('intenciones: pedidos de asesor, preguntas anunciadas, cierres, cancelaciones y negativas', () => {
+    expect(analyze('un asesor, no un robot').intent).toBe('human');
+    expect(analyze('me atiende un asesor, por favor').intent).toBe('human');
+    expect(analyze('¿me atiende un asesor? ¿cuál es el correo?').intent).toBe('identity');
+    expect(analyze('no quiero que me llamen, prefiero que me escriban por aquí').intent).toBe('human');
+    for (const m of ['quiero preguntar algo primero', 'antes quiero preguntar algo', 'quisiera saber otra cosa', 'hola, gracias por atenderme, tengo una pregunta']) {
+      expect(announcesQuestion(m), m).toBe(true);
+    }
+    expect(announcesQuestion('quiero saber el horario')).toBe(false);
+    for (const m of ['gracias, con eso tengo', 'gracias, ya tengo la información', 'listo, con eso me basta']) expect(analyze(m).intent, m).toBe('thanks');
+    expect(cancelOf('no gracias, ya me ayudaste')).toEqual({ cancel: true, question: false });
+    expect(cancelOf('olvídalo, ¿cuál es el correo?')).toEqual({ cancel: true, question: true });
+    expect(cancelOf('no gracias, después escribo').cancel).toBe(true);
+    expect(cancelOf('luego te paso la cédula').cancel).toBe(false);
+    for (const m of ['eso no te incumbe', 'y a ti qué te importa', 'no tengo por qué decirte', 'qué le importa', 'flamingo u offcorss, no sé']) expect(refusedFields(m), m).toBe('all');
+    expect(isSensitive('me llamo pedro tienen abogados')).toBe(false);
+    expect(isSensitive('me llamo pedro y tengo una deuda')).toBe(true);
+    expect(isSensitive('cual es el telefono para hacer un acuerdo de pago')).toBe(false);
+    expect(isSensitive('compre en flamingo y debo unas cuotas')).toBe(true);
+    expect(COMMERCIAL_RE.test('me pueden contratar')).toBe(false);
+    expect(mentionsCase('soy pensionada y me descuentan de la mesada')).toBe(true);
+    expect(isComplaint('la asesora fue grosera conmigo')).toBe(true);
+    expect(withoutUserPlace('soy de cali donde quedan')).toBe('donde quedan');
+  });
+
+  it('el asunto no lleva el nombre ni el documento en ninguna posición, ni conectores sueltos', () => {
+    expect(subjectText('buenas tardes, mi nombre es Carlos Ruiz identificado con cedula 1.036.456.789 y quiero saber cuanto debo', { name: 'Carlos Ruiz', document: '1036456789' })).toBe('quiero saber cuanto debo');
+    expect(subjectText('Soy Carlos Ruiz y mi cédula es 1020304050, ¿cuánto debo?', { name: 'Carlos Ruiz', document: '1020304050' })).toBe('¿cuánto debo?');
+    expect(subjectText('quiero un acuerdo de pago con flamingo, me llamo Luis Torres y mi cc es 79.456.123', { name: 'Luis Torres', document: '79456123' })).toBe('quiero un acuerdo de pago con flamingo');
+    expect(subjectText('somos una empresa con NIT 900.123.456-7 y queremos contratar el servicio de cobranza', { document: '9001234567' })).toBe('somos una empresa y queremos contratar el servicio de cobranza');
+    expect(subjectText('Buenas tardes, soy Laura de Bancolombia, queremos cotizar el servicio de cobranza', { name: 'Laura' })).toBe('Bancolombia: queremos cotizar el servicio de cobranza');
+    expect(subjectText('que es el call center?', {})).toBe('que es el call center?');
+    expect(subjectText('Juan Pérez 1020304050', { name: 'Juan Pérez', document: '1020304050' })).toBe('');
+  });
+});

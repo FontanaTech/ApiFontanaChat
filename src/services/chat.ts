@@ -114,9 +114,11 @@ export const identityAgainText = (company: Pick<Company, 'name'>) =>
 /** "La línea no contesta", "el número no sirve", "tengo una queja": no es una pregunta por el número. */
 export const isComplaint = (message: string) => {
   const n = normalize(message);
-  return CONTACT_COMPLAINT.test(n) || ADVISOR_COMPLAINT.test(n)
+  return CONTACT_COMPLAINT.test(n) || ADVISOR_COMPLAINT.test(n) || TREATMENT_COMPLAINT.test(n)
     || /\b(queja|quejas|reclamo|reclamos|inconforme|mal servicio|pesimo|pesima|no me (ha |han |habia |habian )?(contestado|respondido|atendido|llamado|escrito|devuelto la llamada|resuelto|solucionado)|nadie (me )?(ha |han )?(contesta|responde|contestado|respondido))\b/.test(n);
 };
+/** "La asesora fue grosera conmigo", "el asesor me colgó", "me atendió muy mal el asesor": se queja del trato. */
+const TREATMENT_COMPLAINT = /\b(grosero|grosera|groseros|groseras|maleducad[oa]s?|mal educad[oa]s?|irrespetuos[oa]s?|me (colgo|colgaron|trato mal|trataron mal|atendio (muy )?mal|atendieron (muy )?mal|grito|gritaron|insulto|insultaron|dejo esperando|dejaron esperando|ignoro|ignoraron)|no sabia nada|no sabe nada|pesima atencion|mala atencion|mal atendid[oa])\b/;
 /** "El asesor no me contestó", "mi asesora no me ha devuelto la llamada", "el asesor no me resolvió nada": se queja de un asesor. */
 const ADVISOR_COMPLAINT = /\b(asesor|asesora|asesores|agente|agentes|operador|operadora)\b(?: \S+){0,2}? (no|nunca|aun no|todavia no) (me |nos )?(ha |han |habia |me ha |me han )?(contesta|contestan|contesto|contestado|responde|responden|respondio|respondido|llama|llaman|llamo|llamado|escribe|escriben|escribio|escrito|ayuda|ayudan|ayudo|ayudado|resuelve|resuelven|resolvio|resuelto|soluciona|soluciono|solucionado|devuelve|devolvio|devuelto|atiende|atienden|atendio|atendido|explica|explico|explicado|da|dio|dado|sirve|sirvio|sabe|supo|informa|informo)\b/;
 
@@ -325,10 +327,34 @@ const placeIn = (nm: string, key: string) => new RegExp(`\\b(en|de|del|y|o|a|par
 const citiesIn = (nm: string) => Object.keys(CITIES).filter((c) => placeIn(nm, c) && !Object.keys(CITIES).some((o) => o !== c && o.includes(c) && placeIn(nm, o)));
 const departmentsIn = (nm: string) => Object.keys(DEPARTMENTS).filter((d) => placeIn(nm, d) && !(d === 'santander' && placeIn(nm, 'norte de santander')));
 /** "Soy de Cali, ¿cuál es el correo?": dónde está el visitante no es lo que pregunta. */
-const USER_PLACE = /\b(soy|vivo|estoy|resido|escribo|vengo|llamo|somos|estamos|vivimos) (de|en|desde) (la ciudad de |el municipio de )?[a-z]+( [a-z]+)?\b/g;
+const USER_PLACE_RE = /\b(?:soy|vivo|estoy|resido|escribo|vengo|llamo|somos|estamos|vivimos) (?:de|en|desde) (?:la ciudad de |el municipio de )?([a-z]+(?: [a-z]+){0,2})\b/g;
 const USER_CITY = /\b(?:soy|vivo|estoy|resido|escribo|vengo|llamo|somos|estamos|vivimos) (?:de|en|desde) (?:la ciudad de |el municipio de )?([a-z]+(?: [a-z]+){0,2})\b/;
-/** "Soy colombiano", "somos venezolanos": la nacionalidad no es un lugar por el que pregunte. */
-const NATIONALITY = /\b(soy|somos) (colombian|venezolan|ecuatorian|peruan|mexican|argentin|chilen|bolivian|guatemaltec|espanol)[a-z]*\b/g;
+/** Lo que sigue al lugar del visitante y ya es la pregunta ("soy de Cali donde quedan"): no es parte del lugar. */
+const NOT_PLACE_WORD = /^(donde|adonde|que|cual|cuales|como|cuando|cuanto|quien|quedan|queda|tienen|tiene|hay|atienden|atiende|me|mi|necesito|quiero|quisiera|tengo|y|e|pero|porque|para|por|con|el|la|los|las|un|una|su|sus|ustedes|cerca|aqui|aca|alla)$/;
+/**
+ * "Soy de Cali, ¿dónde quedan?" → "dónde quedan": quita de dónde es el visitante, solo el lugar (una ciudad compuesta,
+ * "Santa Marta", entera), no la pregunta que sigue.
+ */
+export function withoutUserPlace(nm: string): string {
+  return nm.replace(USER_PLACE_RE, (_all, place: string) => {
+    const words = place.split(' ');
+    const known = [3, 2, 1].find((size) => words.length >= size && (!!CITIES[words.slice(0, size).join(' ')] || !!DEPARTMENTS[words.slice(0, size).join(' ')]));
+    const keep = known ?? (NOT_PLACE_WORD.test(words[1] ?? '') ? 1 : Math.min(words.length, 2));
+    return ` ${words.slice(keep).join(' ')} `;
+  }).replace(/\s+/g, ' ').trim();
+}
+/** "Soy colombiano", "somos venezolanos", "soy paisa": de dónde es no es un lugar por el que pregunte. */
+const NATIONALITY = /\b(soy|somos) (colombian|venezolan|ecuatorian|peruan|mexican|argentin|chilen|bolivian|guatemaltec|espanol|paisa|costen|rol[oa]s?\b|calen|pastus|santanderean|boyacense|antioquen|llaner|opita|cachac|vallun|tolimense|huilense|caucan|bogotan|barranquiller|cartagener|samari|cucuten|pereiran|manizalen|caldense|quindian|narinense|chocoan|guajir)[a-z]*\b/g;
+/** Peticiones, quejas, reclamos y datos personales: los atiende la línea de PQR si el sitio la publica. */
+const PQR_TOPIC = /\b(queja|quejas|reclamo|reclamos|peticion|peticiones|pqr|pqrs|sugerencia|sugerencias|denuncia|denuncias|datos personales|habeas data|proteccion de datos|tratamiento de datos)\b/;
+/** "¿Dónde pongo una queja?", "¿con quién hablo para un reclamo?", "¿a qué correo escribo?": pide el canal. */
+const CHANNEL_WHERE = /\b(donde|como|a quien|con quien|a que|a cual)\b.*\b(poner|pongo|radicar|radico|presentar|presento|hacer|hago|enviar|envio|mandar|mando|escribo|escribir|hablo|hablar|dirijo|dirigirme|actualizar|actualizo)\b/;
+/** Lo que el visitante nombra y una línea del sitio describe ("…para tratar acuerdos y conciliaciones", "…quejas, reclamos y datos personales"). */
+const LINE_TOPICS: Array<[RegExp, RegExp]> = [
+  [PQR_TOPIC, /\b(pqr|pqrs|queja|quejas|reclamo|reclamos|peticiones|datos personales)\b/],
+  [/\b(acuerdo|acuerdos|conciliacion|conciliar|negociar|negociacion|refinanciar)\b/, /\b(conciliacion|conciliaciones|acuerdos?)\b/],
+  [/\b(trabajo|empleo|vacante|vacantes|hoja de vida|recursos humanos|rrhh|seleccion|talento humano)\b/, /\b(rrhh|recursos humanos|seleccion|talento humano)\b/],
+];
 /** "¿Tienen sede aquí?", "¿tienen oficina allá?": habla de la ciudad donde está el visitante. */
 const DEICTIC = /\b(aqui|aca|alla|ahi|alli|por aca|por alla|en mi ciudad|en mi municipio|donde vivo|donde estoy|cerca)\b/g;
 const listOf = (parts: string[]) => (parts.length > 1 ? `${parts.slice(0, -1).join(', ')} y ${parts.at(-1)}` : parts[0] ?? '');
@@ -371,15 +397,21 @@ export function contactAnswer(
   const raw = normalize(message).replace(NATIONALITY, ' ').replace(/\s+/g, ' ').trim();
   const cityWords = raw.match(USER_CITY)?.[1].split(' ') ?? [];
   const userCity = [3, 2, 1].map((size) => cityWords.slice(0, size).join(' ')).find((c) => !!c && (!!CITIES[c] || !!DEPARTMENTS[c])) ?? null;
-  let nm = raw.replace(USER_PLACE, ' ').replace(/\s+/g, ' ').trim();
+  let nm = withoutUserPlace(raw);
   if (userCity && (DEICTIC.test(nm) || WANT_ADDRESS.test(nm) || ASKS_PLACE.test(nm))) {
     nm = `${nm.replace(DEICTIC, ' ')} en ${userCity}`.replace(/\s+/g, ' ').trim();
   }
   if (nm.length > 150) return null; // un mensaje largo trae más de una pregunta
+  // "¿A qué correo envío una queja?", "¿dónde pongo un reclamo?": pide el canal de PQR; no es una queja sobre la línea.
+  const pqrAsk = PQR_TOPIC.test(nm) && (WANT_PHONE.test(nm) || WANT_EMAIL.test(nm) || WANT_GENERIC.test(nm) || CHANNEL_WHERE.test(nm));
   // "La línea no contesta", "nadie me contesta en la línea": una queja; no se le da la misma línea.
-  if (CONTACT_COMPLAINT.test(nm) || isComplaint(message)) return null;
+  if (!pqrAsk && (CONTACT_COMPLAINT.test(nm) || isComplaint(message))) return null;
   const notes: string[] = [];
   const wanted = new Set<ContactKind>();
+  if (pqrAsk && !WANT_PHONE.test(nm) && !WANT_EMAIL.test(nm)) {
+    wanted.add('email');
+    wanted.add('phone');
+  }
   const placeVerbs = /\b(atienden|atiende|estan|trabajan|operan|quedan|queda|donde atienden|tienen presencia|tienen (sede|sedes|oficina|oficinas|sucursal|sucursales)) en\b|\bdonde atienden\b/g;
   // "¿Tienen sede en Cali?": si la ciudad no aparece en ninguna dirección publicada, se dice y se nombran las sedes;
   // "¿atienden en Bogotá?" se responde con la sede de Bogotá.
@@ -397,6 +429,16 @@ export function contactAnswer(
     const unknown = asked.filter((c) => !published(c));
     const unknownNames = [...unknown.map((c) => CITIES[c]), ...unknownDepts.map((d) => DEPARTMENTS[d].name)];
     const extra = EXTRA_ASK.test(nm.replace(placeVerbs, ' '));
+    const where = Object.keys(CITIES).filter(published).map((c) => CITIES[c]);
+    const wherePublished = where.length > 0 ? `Nuestras sedes publicadas están en ${listOf(where)}.` : '';
+    // "¿Hay oficina en Pereira? ¿Puedo ir sin cita?": sin modelo se dice que no hay sede ahí y que lo demás no está publicado.
+    if (unknownNames.length > 0 && addresses.length > 0 && extra && asked.length === unknown.length) {
+      if (!opts.partial) return null;
+      return {
+        text: joinText(`En el sitio no aparece una sede en ${listOf(unknownNames)}.`, wherePublished, 'Lo demás que preguntas no aparece publicado en el sitio.'),
+        section: addresses[0].section,
+      };
+    }
     if (unknownNames.length > 0 && addresses.length > 0 && !extra) {
       const missingText = `En el sitio no aparece una sede en ${listOf(unknownNames)}.`;
       // Si también preguntó por una ciudad que sí tiene sede ("¿en Medellín y Cali?"), se da esa dirección.
@@ -405,8 +447,11 @@ export function contactAnswer(
         const known = contactAnswer(k, rest);
         if (known) return { text: joinText(known.text, missingText), section: known.section };
       }
-      const where = Object.keys(CITIES).filter(published).map((c) => CITIES[c]);
-      return { text: joinText(missingText, where.length > 0 ? `Nuestras sedes publicadas están en ${listOf(where)}.` : ''), section: addresses[0].section };
+      return { text: joinText(missingText, wherePublished), section: addresses[0].section };
+    }
+    // "¿Tienen sedes en otros países?": las sedes publicadas son de Colombia.
+    if (/\b(otros? pais(es)?|exterior|fuera de colombia|fuera del pais|en el extranjero)\b/.test(nm) && where.length > 0 && !extra) {
+      return { text: joinText('En el sitio no aparecen sedes fuera de Colombia.', wherePublished), section: addresses[0].section };
     }
     if (asked.length > 0 && addresses.length > 0 && (ASKS_PLACE.test(nm) || !!userCity)) wanted.add('address');
   }
@@ -418,20 +463,28 @@ export function contactAnswer(
     wanted.add('phone');
     wanted.add('email');
   }
-  if (wanted.size === 0) return null;
-  // Pide además otra cosa (si atienden los sábados, si se puede pagar allí): responde el modelo con todo; sin modelo se
-  // da el dato y se aclara que lo demás no está publicado.
-  if (!(wanted.size === 1 && wanted.has('hours')) && EXTRA_ASK.test(nm.replace(placeVerbs, ' '))) {
-    if (!opts.partial) return null;
-    notes.push(/\b(atiende|atienden|sabado|sabados|domingo|domingos|festivo|festivos|24 horas|abren|cierran)\b/.test(nm)
-      ? 'El horario de atención no aparece publicado en el sitio.'
-      : 'Lo demás que preguntas no aparece publicado en el sitio.');
-  }
-  // WhatsApp no es la línea de atención: si el sitio no lo publica, que el modelo lo aclare.
-  if (/\b(whatsapp|wsp|wasap|watsap)\b/.test(nm) && !k.contacts.some((l) => /whatsapp/i.test(l.text))) {
+  // WhatsApp no es la línea de atención: si el sitio no lo publica, que el modelo lo aclare. Sin modelo se dice y se da
+  // la línea ("¿cuál es el WhatsApp?", "¿me pueden escribir por WhatsApp?").
+  const asksWhatsapp = /\b(whatsapp|wsp|wasap|watsap)\b/.test(nm);
+  if (asksWhatsapp && !k.contacts.some((l) => /whatsapp/i.test(l.text))) {
     if (!opts.partial) return null;
     notes.push('En el sitio no aparece un número de WhatsApp.');
-    if (!/\b(telefono|telefonos|linea|lineas|numero|celular)\b/.test(nm)) wanted.add('phone');
+    wanted.add('phone');
+  }
+  if (wanted.size === 0) return null;
+  // "¿Me atiende un asesor? ¿Cuál es el correo?": el "atiende" pregunta quién atiende, no un horario. "…para hacer un
+  // acuerdo de pago": si el sitio publica la línea de acuerdos, el pago es su tema (no otra pregunta).
+  let extraText = nm.replace(placeVerbs, ' ').replace(/\bme (atiende|atienden|atienda|esta atendiendo) (un |una |el |la )?(asesor|asesora|agente|persona|humano)\b/g, ' ');
+  if (LINE_TOPICS[1][0].test(nm) && k.contacts.some((l) => LINE_TOPICS[1][1].test(normalize(l.text)))) {
+    extraText = extraText.replace(/\b(acuerdos?|conciliacion|negociar|negociacion|refinanciar)( (de|del|el|la|mi|un|una) (pago|pagos|deuda|credito|obligacion))?\b/g, ' ');
+  }
+  // Pide además otra cosa (si atienden los sábados, si se puede pagar allí): responde el modelo con todo; sin modelo se
+  // da el dato y se aclara que lo demás no está publicado.
+  if (!(wanted.size === 1 && wanted.has('hours')) && EXTRA_ASK.test(extraText)) {
+    if (!opts.partial) return null;
+    notes.push(/\b(atiende|atienden|sabado|sabados|domingo|domingos|festivo|festivos|24 horas|abren|cierran)\b/.test(extraText)
+      ? 'El horario de atención no aparece publicado en el sitio.'
+      : 'Lo demás que preguntas no aparece publicado en el sitio.');
   }
 
   let lines = k.contacts.filter((l) => [...wanted].some((w) => l.kinds.has(w)));
@@ -452,16 +505,30 @@ export function contactAnswer(
       notes.push(unpublishedNote(w));
     }
   }
+  // "¿Cuál es el correo para quejas?", "…para actualizar mis datos personales?", "…para hacer un acuerdo de pago?": si una
+  // línea del sitio atiende justo eso (PQR, conciliación, RR. HH.), se usa esa.
+  let topicLine = false;
+  for (const [asks, serves] of LINE_TOPICS) {
+    if (!asks.test(nm)) continue;
+    const fit = lines.filter((l) => serves.test(normalize(l.text)));
+    if (fit.length > 0) {
+      lines = fit;
+      topicLine = true;
+    }
+  }
   const lineTokens = (l: ContactLine) => new Set(tokens(`${l.text} ${l.section.title}`));
   // Pide el dato DE algo que ninguna línea trae ("¿tienen sede en Cali?", "el teléfono de facturación"): no se
   // adivina con la línea general; responde el modelo, que puede decir que no está publicado. Sin modelo se da el general
-  // y se aclara.
-  const named = [...nm.matchAll(/\b(?:en|de|del|para|sobre)\s+(?:(?:la|el|los|las)\s+)?([a-z0-9ñ]+)/g)]
+  // y se aclara (una sola vez: si ya se dijo que lo demás no está publicado, basta esa nota).
+  const named = [...nm.matchAll(/\b(?:en|de|del|para|sobre)\s+(?:(?:la|el|los|las|un|una|mis|mi)\s+)?([a-z0-9ñ]+)/g)]
     .map((m) => tokens(m[1])[0])
     .filter((t): t is string => !!t && !INTENT_STEMS.has(t));
-  if (named.some((t) => !lines.some((l) => lineTokens(l).has(t)))) {
+  if (!topicLine && named.some((t) => !lines.some((l) => lineTokens(l).has(t)))) {
     if (!opts.partial) return null;
-    notes.push('En el sitio no aparece un dato específico para eso.');
+    const general = 'Lo demás que preguntas no aparece publicado en el sitio.';
+    const specific = 'En el sitio no aparece un dato específico para eso.';
+    if (notes.includes(general)) notes.splice(notes.indexOf(general), 1, specific);
+    else notes.push(specific);
   }
   // Si nombra un lugar o un canal (Bogotá, PQR), se prefieren sus líneas. Cuenta la etiqueta de la línea, el título de
   // su sección o una ciudad que nombre; no cualquier palabra de la dirección ("interesa" no es "Centro Internacional").
@@ -763,7 +830,7 @@ const FOLLOW_UP_RE = /^(y|e|o|pero|entonces|tambien|ademas|osea|o sea|eso|esa|es
  * Busca empleo: "busco trabajo", "información sobre trabajo", "¿hay vacantes?", "quiero enviar mi hoja de vida",
  * "¿están contratando?", "me gustaría trabajar en AAgora", "quiero trabajar como asesor".
  */
-const JOB_QUERY = /\b(busco|buscando|necesito|quiero|hay|tienen|informacion (de|sobre)|ofertas? de|oportunidad(es)? de) (un |una )?(trabajo|empleo)\b|\b(trabajar con ustedes|hoja de vida|enviar (mi )?(cv|curriculum))\b|\b(quiero|quisiera|me gustaria|me interesa|deseo|busco|como (puedo|hago para)) (trabajar|laborar|aplicar|postularme|vincularme)\b|\b(trabajar|laborar) (con|en|como|de|para)\b|\b(estan|estaran|siguen) (contratando|buscando personal)\b|\bcomo trabajo con ustedes\b/;
+const JOB_QUERY = /\b(busco|buscando|necesito|quiero|hay|tienen|informacion (de|sobre)|ofertas? de|oportunidad(es)? de) (un |una )?(trabajo|empleo)\b|\b(trabajar con ustedes|hoja de vida|enviar (mi )?(cv|curriculum))\b|\b(quiero|quisiera|me gustaria|me interesa|deseo|busco|como (puedo|hago para)) (trabajar|laborar|aplicar|postularme|vincularme)\b|\b(trabajar|laborar) (con|en|como|de|para)\b|\b(estan|estaran|siguen) (contratando|buscando personal)\b|\bcomo trabajo con ustedes\b|\b(me|nos) (pueden|puede|podrian|podria|quieren|quisieran) contratar\b|\bque me contraten\b|\bcontratarme\b/;
 /** Ajeno a la empresa: chistes, cultura general, pedidos de cambiar las reglas. */
 const OFFTOPIC_RE = /\b(chiste|chistes|adivinanza|adivinanzas|poema|poesia|cancion|canciones|receta de|recetas de|horoscopo|futbol|capital de|quien gano|traduce|traducir|ignora (tus|las|todas las) (instrucciones|reglas)|olvida (tus|las) (instrucciones|reglas)|cuentame algo (gracioso|divertido)|eres chatgpt)\b/;
 
@@ -781,7 +848,7 @@ const NEGATIVE_CLAIM_RE = /\bno (proporciona|ofrece|cuenta|realiza|hace|tiene|ma
  * al menos la mitad de sus palabras de contenido presentes en el sitio. Si no, se trata como "no publicado".
  */
 /** "…; el horario no aparece publicado en el sitio": decir qué NO está publicado no se inventa nada. */
-const NOT_PUBLISHED_CLAUSE = /\b(no (aparece|esta|se encuentra|figura|viene|hay|tenemos|contamos con|publicamos|se publica)\b.{0,40}\b(publicad[oa]s?|en (el|nuestro|este) (sitio|portal)|en (la|nuestra|esta) pagina)|no (aparece|esta|se encuentra|figura|viene) (publicad[oa]s?|en (el|nuestro) sitio|en la pagina)|no (lo|la|los|las) (publica|publicamos|menciona|indica)|el sitio no (lo |la )?(publica|menciona|indica|dice|aparece|figura|tiene)|no tengo (esa |ese )?(informacion|dato)|no (esta|estan) disponibles? en el sitio)\b/;
+const NOT_PUBLISHED_CLAUSE = /\b(no (aparece|aparecen|esta|estan|se encuentra|se encuentran|figura|figuran|viene|vienen|hay|tenemos|contamos con|publicamos|se publica|se publican|veo|vemos|encuentro|encontre|se menciona|se mencionan|se indica|se indican)\b.{0,50}\b(publicad[oa]s?|en (el|nuestro|este) (sitio|portal)|en (la|nuestra|esta) pagina)|no (aparece|aparecen|esta|estan|se encuentra|figura|viene) (publicad[oa]s?|en (el|nuestro) sitio|en la pagina)|no (lo|la|los|las) (publica|publicamos|menciona|indica|encuentro|veo|tengo)\b.{0,30}\b(publicad[oa]s?|en (el|nuestro|este) (sitio|portal)|en (la|nuestra|esta) pagina)|no (lo|la|los|las) (publica|publicamos|menciona|indica)|el sitio no (lo |la |los |las )?(publica|menciona|indica|dice|aparece|figura|tiene|muestra)|no tengo (esa |ese )?(informacion|dato)|no (esta|estan) disponibles? en el sitio)\b/;
 
 export function isGrounded(answer: string, k: Knowledge): boolean {
   // Las partes que solo dicen que algo no está publicado no cuentan para comprobar el resto.
@@ -907,7 +974,7 @@ export async function answerChat(deps: ChatDeps, company: Company, session: Publ
   // ("me llamo Ana, ¿qué servicios ofrecen?" no pide la línea telefónica por "llamo"). Para los datos de contacto se deja
   // de dónde es ("vivo en Cali, ¿tienen sede aquí?"); para lo demás se quita ("soy de Medellín, ¿qué servicios tienen?").
   const topic = topicText(withoutVisitorData(message)) || nm;
-  const forMatch = topic.replace(USER_PLACE, ' ').replace(NATIONALITY, ' ').replace(/\s+/g, ' ').trim() || topic;
+  const forMatch = withoutUserPlace(topic).replace(NATIONALITY, ' ').replace(/\s+/g, ' ').trim() || topic;
   // Reglas fijas, en el orden de prioridad de intents.ts (una sola fuente para el chat clásico y el chat en vivo).
   const intent = classify(message);
   if (intent === 'identity') return { type: 'answer', message: identityText(company) };

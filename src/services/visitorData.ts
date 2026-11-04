@@ -1,6 +1,9 @@
 import { normalize } from '../utils/text';
-import { analyze, JOB_SENSE, yesNo } from './intents';
-import { EVERYDAY, FIRST_NAMES, isCommonWord, PLACES, ROLE_TITLES, SURNAMES, TITLES, WORD_NAMES } from './lexicon';
+import { analyze, isPureYesNo, JOB_SENSE, yesNo } from './intents';
+import { COMMON, DESCRIPTIVE_NAMES, ENDEARMENTS, EVERYDAY, FIRST_NAMES, isCommonWord, PLACES, ROLE_TITLES, SURNAMES, TITLES, WORD_NAMES } from './lexicon';
+
+/** Una marca o entidad ("Claro", "Bancolombia"): está entre las palabras comunes pero no es de uso diario. */
+const COMMON_BRAND = (w: string) => COMMON.has(w) && !EVERYDAY.has(w);
 
 /**
  * Captura de datos del visitante (nombre, documento y cartera) a partir de lo que escribe. Es determinística: no
@@ -30,6 +33,11 @@ export interface Extracted {
   asks?: boolean;
   /** Lo que queda del mensaje sin los datos: si está vacío, el mensaje solo traía datos. */
   rest: string;
+  /**
+   * Lo que dijo además de los datos, sin quitar las palabras que suelen acompañarlos ("Juan Pérez qué horario tienen" →
+   * "que horario tienen"): sirve para ver si además pregunta algo.
+   */
+  said?: string;
 }
 
 /** Qué estaba pidiendo el bot cuando llegó el mensaje. */
@@ -48,14 +56,23 @@ export interface CaptureContext {
   siteWords?: Set<string>;
   /** El nombre guardado es una sola palabra poco común ("Comfandi"): se lee igual el nombre, por si llega uno completo. */
   nameLoose?: boolean;
+  /** El nombre que ya está guardado: "Pedro no, Juan Gómez" o "no, Juan Gómez" lo corrigen. */
+  savedName?: string | null;
 }
 
 const toContext = (ctx: CaptureContext | boolean | 'weak' | undefined): CaptureContext =>
   ctx === true ? { asked: 'name' } : ctx === 'weak' ? { asked: 'offer' } : !ctx ? { asked: null } : ctx;
 
-/** "Perdón, es…", "me equivoqué", "no es X, es Y", "mejor dicho": corrige un dato que ya dio. */
-const CORRECTION_RE = /\b(perdon|perdona|perdone|disculpa|disculpe|me equivoque|me confundi|corrijo|correccion|el correcto es|la correcta es|el bueno es|mejor dicho|quise decir|no es)\b/;
-export const isCorrection = (message: string) => CORRECTION_RE.test(normalize(message));
+/**
+ * "Perdón, es…", "me equivoqué", "no es X, es Y", "mejor dicho", "el número correcto es…", "1020304051 es el correcto",
+ * "lo escribí mal", "me faltó un número", "la nueva es…", "en realidad es de Offcorss", "no era…": corrige un dato que
+ * ya dio.
+ */
+const CORRECTION_RE = /\b(perdon|perdona|perdone|disculpa|disculpe|me equivoque|me confundi|corrijo|correccion|el correcto es|la correcta es|el bueno es|la buena es|mejor dicho|quise decir|no es|no era|en realidad (es|era)|(el|mi|ese|este|la|esa|esta) (numero|documento|cedula|dato) (correcto|correcta|real|bueno|buena|verdadero|verdadera|nuevo|nueva) es|(es|era) (el|la) (correcto|correcta|bueno|buena|real)|(esta|estaba|quedo) mal( escrito| escrita)?|(lo|la) (escribi|puse|digite|di|anote) mal|me falto (un|una) (numero|digito|cifra)|(el|la) (nuevo|nueva) es|error es)\b/;
+/** "No, es Offcorss", "no señor, es Flamingo", "ah no, la de Offcorss": el "no" con pausa corrige lo dicho antes. */
+const NO_THEN_SOURCE = String.raw`(^|[^\p{L}])no(?:\s+(?:se[ñn]or(?:a|ita)?|joven|doctor(?:a)?|mij[oa]|amig[oa]|veci))?\s*[,;:.!]+\s*(?=(?:es|era|ser[ií]a|sino|la|el|de|del|con|mi|para)(?![\p{L}]))`;
+const correctsWithPause = (message: string) => new RegExp(NO_THEN_SOURCE, 'iu').test(message);
+export const isCorrection = (message: string) => CORRECTION_RE.test(normalize(message)) || correctsWithPause(message);
 
 /* ---------- documento ---------- */
 
@@ -105,10 +122,15 @@ const wordsBefore = (message: string, i: number, n: number) => normalize(message
 const wordsAfter = (message: string, i: number, n: number) => normalize(message.slice(i)).split(' ').slice(0, n).join(' ');
 const isDate = (raw: string) => /^\d{1,2}[-./]\d{1,2}[-./]\d{2,4}$/.test(raw) || /^\d{4}[-./]\d{1,2}[-./]\d{1,2}$/.test(raw);
 
-/** Las palabras antes del número, sin los apellidos que siguen a un nombre ("Martha Cuesta 43123456" no habla de un precio). */
+/**
+ * Las palabras antes del número, sin los apellidos que siguen a un nombre ("Martha Cuesta 43123456", "Luz Dary Cuesta
+ * 52111222" o "Marina Linda Cuesta …" no hablan de un precio).
+ */
 function moneyContext(message: string, i: number): string {
-  const ws = wordsBefore(message, i, 3).split(' ');
-  return ws.filter((w, k) => !(SURNAMES.has(w) && k > 0 && (FIRST_NAMES.has(ws[k - 1]) || SURNAMES.has(ws[k - 1])))).join(' ');
+  const raw = message.slice(0, i).replace(/[,;:]+/g, ' ').trim().split(/\s+/).slice(-3);
+  const ws = raw.map((w) => normalize(w));
+  const nameBefore = (k: number) => FIRST_NAMES.has(ws[k - 1]) || SURNAMES.has(ws[k - 1]) || (/^[A-ZÁÉÍÓÚÑ]/.test(raw[k - 1]) && /^[A-ZÁÉÍÓÚÑ]/.test(raw[k]));
+  return ws.filter((w, k) => !(SURNAMES.has(w) && k > 0 && nameBefore(k))).join(' ');
 }
 
 /**
@@ -255,8 +277,8 @@ function mentionsOf<P extends PortfolioTerms>(message: string, portfolios: P[]):
 /** Palabras que acompañan al "sí" del inicio ("ok claro", "sí claro", "claro que sí, …"). */
 const ACK_WORDS = new Set(['si', 'pues', 'ah', 'ya', 'bueno', 'ok', 'okey', 'listo', 'vale', 'dale', 'perfecto', 'bien', 'muy', 'gracias', 'que']);
 const NEGATORS = new Set(['no', 'ni', 'tampoco', 'sin']);
-/** "No, es Offcorss", "ah no, la de Flamingo": el "no" con pausa corrige lo dicho antes (no niega lo que sigue). */
-const NO_THEN = /(^|[^\p{L}])no\s*[,;:.!]+\s*(?=(?:es|era|ser[ií]a|sino|la|el|de|del|con|mi|para)(?![\p{L}]))/giu;
+/** "No, es Offcorss", "ah no, la de Flamingo", "no señor, es Flamingo": el "no" con pausa corrige lo dicho antes (no niega lo que sigue). */
+const NO_THEN = new RegExp(NO_THEN_SOURCE, 'giu');
 /** "Flamingo no, Offcorss": el "no" con pausa niega lo de antes ("Offcorss, no Flamingo" niega lo de después). */
 const NO_PAUSE = /(^|[^\p{L}])no(\s*[,;:.!]+|\s*$)/giu;
 const NO_AFTER = 'nopausa';
@@ -266,6 +288,11 @@ function ackPrefix(words: string[]) {
   while (end < words.length && (YES_WORDS.has(words[end]) || ACK_WORDS.has(words[end]))) end++;
   return { end, whole: end === words.length, claroQueSi: /^(si )?claro que si\b/.test(words.join(' ')) };
 }
+/** Lo que une dos carteras nombradas seguidas ("Claro y Flamingo", "Claro o Offcorss"). */
+const JOINERS = new Set(['y', 'e', 'o', 'u', 'ni', 'con', 'y con', 'o con']);
+/** "Claro y Flamingo": el "claro" del inicio va unido a otra cartera, así que es la cartera Claro (no un sí). */
+const joinedToNext = <P>(words: string[], found: Mention<P>[], i: number) =>
+  found.some((m) => m.at > i + 1 && m.at <= i + 3 && JOINERS.has(words.slice(i + 1, m.at).join(' ')));
 
 /** Una cartera negada ("no es Flamingo", "Flamingo no, …", "ni Claro"): lo que va antes o el "no" con pausa después. */
 const NEGATED_LEAD = /\b(no|ni|tampoco|sin)( es| era| son| fue)?( de| con| por| para| la de| el de| del)?( la| el)?$/;
@@ -279,7 +306,8 @@ export function namedPortfolios<P extends PortfolioTerms>(message: string, portf
   const words = normalize(text).split(' ');
   const ack = ackPrefix(words);
   const seen = new Set<string>();
-  const found = mentionsOf(text, portfolios).filter((m) => !(m.at < ack.end && YES_WORDS.has(words[m.at])));
+  const all = mentionsOf(text, portfolios);
+  const found = all.filter((m) => !(m.at < ack.end && YES_WORDS.has(words[m.at]) && !joinedToNext(words, all, m.at)));
   const isNegated = (m: Mention<P>) => NEGATED_LEAD.test(words.slice(Math.max(0, m.at - 4), m.at).join(' ')) || words[m.at + m.size] === NO_AFTER;
   return {
     list: found.map((m) => m.p).filter((p) => !seen.has(p.key) && !!seen.add(p.key)),
@@ -288,12 +316,16 @@ export function namedPortfolios<P extends PortfolioTerms>(message: string, portf
 }
 
 /** "mi cartera es X", "es con X", "tengo una deuda con X", "quiero un asesor de X", "me están cobrando de X": X es SU cartera. */
-const PORTFOLIO_MARK = /\b(cartera|carteras|cartera de|de la cartera|cartera es|area es|la de|lo de|es de|es con|es por|es para|soy de|vengo de|vengo por|llamo por|cliente de|deuda con|deuda de|deuda en|deudas con|credito con|credito de|credito en|cuenta con|cuenta de|cuenta en|obligacion con|obligacion de|debo a|debo en|le debo a|compre en|me cobran de|me llaman de|me llamaron de|me escribieron de|me escriben de|de parte de|por parte de|tengo con|es la de|es el de|area de|asesor|asesora|agente|asesor de|asesora de|asesor para|asesora para|agente de|alguien de|alguien para|persona de|cobrando de|cobran de|cobrando por|llamando de|escribiendo de)( la| el| los| las)?$/;
+const PORTFOLIO_MARK = /\b(cartera|carteras|cartera de|de la cartera|cartera es|area es|la de|lo de|es de|es con|es por|es para|soy de|vengo de|vengo por|llamo por|cliente de|deuda con|deuda de|deuda en|deudas con|credito con|credito de|credito en|cuenta con|cuenta de|cuenta en|obligacion con|obligacion de|debo a|debo en|le debo a|compre en|me cobran de|me llaman de|me llamaron de|me escribieron de|me escriben de|de parte de|por parte de|tengo con|es la de|es el de|area de|asesor|asesora|agente|asesor de|asesora de|asesor para|asesora para|agente de|alguien de|alguien para|persona de|cobrando de|cobran de|cobrando por|llamando de|escribiendo de|pago con|pagos con|pago de|pago a|acuerdo con|negociar con|negociacion con|paz y salvo de|paz y salvo con|pagarle a|pagar a|pagarles a|abonar a|abono a|saldo con|saldo de|saldo en|mora con|mora en|cuota con|cuota de|cuotas con|cuotas de|cuotas en|factura de|facturas de|con los de|los de|las de|con las de)( la| el| los| las)?$/;
 const ADVISOR_MARK = /\b(asesor|asesora|agente)( de| para)?( la| el| los| las)?$/;
 /** "Quiero hablar con los asesores de Flamingo": en un pedido de asesor también marca la cartera. */
 const ADVISORS_MARK = /\b(asesores|asesoras|agentes)( de| para)?( la| el| los| las)?$/;
-/** Lo que puede ir entre dos carteras nombradas a la vez ("con Claro y con Flamingo", "Offcorss o Flamingo"). */
-const COORDINATION = new Set(['y', 'e', 'o', 'u', 'con', 'de', 'del', 'en', 'la', 'el', 'tambien', 'ademas']);
+/**
+ * Lo que puede ir entre dos carteras nombradas a la vez ("con Claro y con Flamingo", "Offcorss o Flamingo", "una deuda
+ * con Flamingo y otra con Offcorss").
+ */
+const COORDINATION = new Set(['y', 'e', 'o', 'u', 'ni', 'con', 'de', 'del', 'en', 'la', 'el', 'tambien', 'ademas', 'otra', 'otro', 'una', 'un',
+  'deuda', 'deudas', 'credito', 'creditos', 'cuenta', 'cuentas', 'obligacion', 'obligaciones']);
 
 /**
  * La cartera del visitante. Nombrar una marca no basta ("¿trabajan con Offcorss?" pregunta por un aliado): cuenta
@@ -314,21 +346,27 @@ const COORDINATION = new Set(['y', 'e', 'o', 'u', 'con', 'de', 'del', 'en', 'la'
 export function statedPortfolio<P extends PortfolioTerms>(
   message: string, portfolios: P[], asked: boolean | 'bare', consumed: Set<string> = new Set(),
   opts: { onlyPortfolio?: boolean; human?: boolean } = {},
-): { portfolio: P; explicit: boolean } | undefined {
+): { portfolio: P; explicit: boolean; corrected?: boolean } | undefined {
   const text = message.replace(NO_THEN, '$1perdon ').replace(NO_PAUSE, `$1${NO_AFTER}$2`);
   const found = mentionsOf(text, portfolios);
   if (found.length === 0) return undefined;
   const n = normalize(text);
   const words = n.split(' ');
-  const correction = CORRECTION_RE.test(n);
   const job = JOB_SENSE.test(n);
   const leadOf = (m: Mention<P>) => (m.at > 0 ? words.slice(Math.max(0, m.at - 4), m.at).join(' ') : '');
   const distinctOf = (m: Mention<P>) => new Set(termsOf(m.p).flatMap(stems));
   const ambiguous = (m: Mention<P>) => [...distinctOf(m)].every((w) => EVERYDAY.has(w));
   const ack = ackPrefix(words);
-  /** El "sí" del inicio cuenta como sí (y no como la cartera) salvo que sea toda la respuesta a "¿de qué cartera es?". */
-  const yesAt = (i: number) => i < ack.end && YES_WORDS.has(words[i]) && (ack.claroQueSi || !ack.whole || !opts.onlyPortfolio);
+  /**
+   * El "sí" del inicio cuenta como sí (y no como la cartera) salvo que sea toda la respuesta a "¿de qué cartera es?" o
+   * que vaya unido a otra cartera ("Claro y Flamingo").
+   */
+  const yesAt = (i: number) => i < ack.end && YES_WORDS.has(words[i]) && !joinedToNext(words, found, i)
+    && (ack.claroQueSi || !ack.whole || !opts.onlyPortfolio);
   const negated = (m: Mention<P>) => NEGATED_LEAD.test(leadOf(m)) || words[m.at + m.size] === NO_AFTER;
+  // "Flamingo no, Offcorss", "Offcorss, no Flamingo": niega una y dice otra; es una corrección.
+  const swapped = found.some(negated) && found.some((m) => !negated(m) && !yesAt(m.at));
+  const correction = CORRECTION_RE.test(n) || swapped;
   const negWords = new Set(found.filter(negated).flatMap((m) => [...distinctOf(m)]));
   const bare = words.filter((w, i) => !FILLER.has(w) && !BARE_FILLER.has(w) && !consumed.has(w) && !/^\d+$/.test(w)
     && !NEGATORS.has(w) && w !== NO_AFTER && !negWords.has(stem(w)) && !yesAt(i)).map(stem);
@@ -348,12 +386,12 @@ export function statedPortfolio<P extends PortfolioTerms>(
   if (coordinated && !correction) return undefined;
   const explicit = live.filter(marked);
   if (explicit.length > 0) {
-    if (kinds(explicit) === 1 || correction) return { portfolio: explicit.at(-1)!.p, explicit: true };
+    if (kinds(explicit) === 1 || correction) return { portfolio: explicit.at(-1)!.p, explicit: true, corrected: correction };
     return undefined;
   }
   if (correction) {
     const fixed = live.find(isBare);
-    if (fixed) return { portfolio: fixed.p, explicit: true };
+    if (fixed) return { portfolio: fixed.p, explicit: true, corrected: true };
   }
   if (!asked) return undefined;
   if (asked === 'bare') {
@@ -389,9 +427,24 @@ const clean = (piece: string) => piece.replace(/^[¿¡"'(]+|[,.;:!?)"']+$/g, '')
 function looksLikeName(w: string, stop?: Set<string>): boolean {
   if (FIRST_NAMES.has(w) || SURNAMES.has(w)) return true;
   if (w.length < 3 || w.length > 14 || isCommonWord(w) || PLACES.has(w) || stop?.has(w) || isNoise(w) || !/[aeiouy]/.test(w)) return false;
-  if (w.length > 4 && w.endsWith('s')) return false; // un plural ("convenios"); Carlos, Andrés o Marcos están en la lista
+  // Un plural ("convenios", "tarifas"); Carlos, Andrés o Marcos están en la lista. En -is o -ys casi nunca es un plural
+  // sino un nombre ("Yarlenis", "Leidys"), salvo las palabras en -itis ("gastritis").
+  if (w.length > 4 && w.endsWith('s') && (!/(is|ys)$/.test(w) || /itis$/.test(w))) return false;
   return !NOT_NAME_ENDING.test(w);
 }
+
+/**
+ * "linda", "mi reina", "princesa", "pastor" en minúscula: un apelativo o un oficio, no el nombre ("Linda" o "Pastor
+ * Hernández" sí pueden serlo).
+ */
+const NOT_NAME_ALONE = (w: string) => ENDEARMENTS.has(w) || w === 'pastor';
+const endearmentOnly = (s: string) => {
+  const ws = s.trim().split(/\s+/).map(clean).filter(Boolean);
+  return ws.length > 0 && ws.length <= 3 && !ws.some(capitalized)
+    && ws.some((w) => NOT_NAME_ALONE(normalize(w))) && ws.every((w) => NOT_NAME_ALONE(normalize(w)) || ['mi', 'mis'].includes(normalize(w)));
+};
+/** Tras "soy", un nombre que también describe a la persona ("soy franco", "soy clara", "soy pastora", "soy linda"). */
+const describes = (w: string) => DESCRIPTIVE_NAMES.has(w) || ENDEARMENTS.has(w);
 
 /** "Dr. Juan Pérez", "la señora Gloria Pérez", "el doctor Pedro Gómez": el tratamiento se quita antes de leer el nombre. */
 const LEAD_TITLE = /^\s*(?:(?:el|la)\s+)?(?:(?:se[ñn]or(?:a|ita)?|doctor(?:a)?|dr|dra|sr|sra|srta|ing|ingenier[oa]|lic|licenciad[oa]|prof|profesor(?:a)?|don|do[ñn]a|abg|abogad[oa])\.?\s+)+/iu;
@@ -468,7 +521,7 @@ const TAIL_OK = new Set(`y e mi mis el la los las de del es son con numero cedul
 /** Palabras que unen el nombre con el resto de la frase ("Juan Pérez y necesito…", "soy Yurany de Cali"). */
 const CONNECTORS = new Set(['y', 'e', 'pero', 'porque', 'que', 'pues', 'entonces', 'para', 'con', 'de', 'del']);
 
-const EXPLICIT_RE = /(?:^|[^\p{L}])(me llamo|mi nombre completo es|mi nombre es|mi nombre:|nombre completo:|nombre:|mi nombre|soy|le habla|te habla|les habla|con usted habla|habla con|hablas con|habla|le escribe|te escribe|les escribe)\s*[:,]?\s+/giu;
+const EXPLICIT_RE = /(?:^|[^\p{L}])(me llamo|mi nombre completo es|mi nombre es|mi nombre:|nombre completo:|nombre:|mi nombre|soy|le habla|te habla|les habla|con usted habla|habla con|hablas con|habla|le escribe|te escribe|les escribe|me dicen|me conocen como|me puedes decir|me puede decir|me pueden decir|puedes decirme|puede decirme|ll[aá]mame|ll[aá]meme)\s*[:,]?\s+/giu;
 const STRONG = /^(me llamo|mi nombre completo es|mi nombre es|mi nombre:|nombre completo:|nombre:|mi nombre)$/i;
 
 /**
@@ -491,8 +544,11 @@ function explicitNameOf(
   let best: { name: string; strong: boolean } | null = null;
   for (const m of message.matchAll(EXPLICIT_RE)) {
     const start = m.index! + m[0].indexOf(m[1]);
+    const before = message.slice(0, start);
     // "No me llamo…", "yo no soy…" no cuentan; "no, me llamo Andrés" sí (corrige).
-    if (/\bno\s+$/i.test(message.slice(0, start))) continue;
+    if (/\bno\s+$/i.test(before)) continue;
+    // "Le soy franco", "te soy clara", "les soy sincero": una expresión, no el nombre.
+    if (/^soy$/i.test(m[1]) && /(?:^|[^\p{L}])(le|te|les|se|os)\s+$/iu.test(before)) continue;
     const after = message.slice(m.index! + m[0].length);
     const words = readName(after, opts.stop);
     const core = nameWords(words);
@@ -501,9 +557,13 @@ function explicitNameOf(
     const norm = core.map((w) => normalize(w));
     const tail = normalize(after.slice(endOf(after, words)).split(/[,;.!?:\n]/)[0]).split(' ').filter(Boolean);
     const settled = tail.every((w) => TAIL_OK.has(w)) || CONNECTORS.has(tail[0]);
-    const known = FIRST_NAMES.has(norm[0]) || norm.slice(1).some((w) => SURNAMES.has(w) || FIRST_NAMES.has(w));
+    // "Soy franco, no puedo pagar", "soy clara con usted", "soy linda": un nombre que también es palabra cuenta con
+    // mayúscula ("soy Franco") o con apellido ("soy franco pérez").
+    const firstOk = FIRST_NAMES.has(norm[0]) && (!describes(norm[0]) || capitalized(core[0]));
+    const known = firstOk || norm.slice(1).some((w) => SURNAMES.has(w) || FIRST_NAMES.has(w));
     const capsLike = capitalized(core[0]) && looksLikeName(norm[0], opts.stop);
-    const askedLike = !!opts.asked && !!(opts.onlyName || opts.withDocument) && norm.every((w) => looksLikeName(w, opts.stop));
+    const askedLike = !!opts.asked && !!(opts.onlyName || opts.withDocument) && norm.every((w) => looksLikeName(w, opts.stop))
+      && !(core.length === 1 && describes(norm[0]) && !capitalized(core[0]));
     if (!strong && !(known || ((capsLike || askedLike) && settled))) continue;
     const name = finish(words);
     if (!name) continue;
@@ -536,6 +596,25 @@ function nameCorrection(message: string, stop?: Set<string>): string | null {
   return evidence ? finish(words) : null;
 }
 
+/** "Pedro no, Juan Gómez", "no Pedro, Juan Gómez", "no, Juan Gómez": cambia el nombre guardado por otro. */
+const NAME_SWAP = /^\s*(?:(?<old>[\p{L}]+(?:\s+[\p{L}]+)?)\s+no|no(?:\s+(?<old2>[\p{L}]+(?:\s+[\p{L}]+)?))?)\s*[,;:.!]+\s*(?<rest>[^,.;:!?\n]+?)[\s.!]*$/iu;
+function nameSwap(message: string, saved: string | null | undefined, stop?: Set<string>): string | null {
+  if (!saved) return null;
+  const m = message.match(NAME_SWAP)?.groups;
+  if (!m) return null;
+  const old = normalize(m.old ?? m.old2 ?? '');
+  // El nombre que niega debe ser el guardado ("Pedro no, …" con "Pedro Gómez" guardado).
+  if (old && !normalize(saved).split(' ').includes(old.split(' ')[0])) return null;
+  const words = readName(m.rest, stop);
+  const core = nameWords(words);
+  if (core.length === 0 || normalize(m.rest.slice(endOf(m.rest, words))).trim()) return null;
+  const norm = core.map((w) => normalize(w));
+  if (normalize(saved) === norm.join(' ')) return null;
+  const full = core.length >= 2 && (FIRST_NAMES.has(norm[0]) || core.every(capitalized)) && norm.every((w) => looksLikeName(w, stop));
+  const single = !!old && core.length === 1 && capitalized(core[0]) && looksLikeName(norm[0], stop);
+  return full || single ? finish(words) : null;
+}
+
 const LEAD_FILLER = /^(buenas tardes|buenas noches|buenos d[ií]as|buen d[ií]a|hola|buenas|bueno|claro que s[ií]|claro|listo|ok|okey|s[ií]|dale|pues|gracias|vale|perfecto|mucho gusto|un gusto|con gusto|el gusto es m[ií]o|hablas con|habla con|habla|yo soy|soy|yo|mis datos completos son|mis datos son|mis datos|aqu[ií] van mis datos|aqu[ií] van|aqu[ií] est[aá]n|te (?:paso|doy|env[ií]o|dejo) mis datos|te los (?:paso|doy|env[ií]o|dejo)|ya te los doy|ya te lo dije|te lo dije|ya te dije|como te dije|le escribe|te escribe|les escribe|de parte de|mi nombre (?:y|con) (?:mi )?(?:c[eé]dula|documento)|mi nombre completo|nombre completo|nombre y apellidos?|mi nombre|nombre|datos)(?![\p{L}])[\s,.:]*/iu;
 const DOC_PHRASE = /\b(identificad[oa] con|con (la )?(c\.?\s?c\.?|c[eé]dula)|c\.?\s?c\.?(\s*(no\.?|n[uú]mero|#))?|c[eé]dula( de ciudadan[ií]a| de extranjer[ií]a)?|documento( de identidad)?|tarjeta de identidad|n[uú]mero de (documento|c[eé]dula|identificaci[oó]n)|nit|identificaci[oó]n|pasaporte|ppt|pep)(?=[\s,.:;]|$)/gi;
 /** "Dr." con punto: el punto no corta el mensaje en dos ("Dr. Carlos Mejía"). */
@@ -560,11 +639,24 @@ type NameMode = 'name' | 'handoff' | 'offer' | 'queue' | 'correction' | 'data';
 
 /** Un saludo o una cortesía que sigue al nombre ("Ana López mucho gusto", "Juan buenas noches", "Carlos, para servirle"). */
 const GREETING_AFTER = /^(mucho gusto|un gusto|un placer|encantad[oa]|gracias|muchas gracias|mil gracias|buenas tardes|buenas noches|buenos dias|buen dia|buenas|hola|saludos|para servirle|para servirte|a la orden|a sus ordenes|a tu orden|igualmente|bendiciones|feliz (dia|tarde|noche))\b/;
+/** "Ana López, mucho gusto", "Carlos Gómez, para servirle": se presenta con un nombre y una cortesía. */
+const SELF_INTRO = /^[a-z]+(?: [a-z]+){1,4} (mucho gusto|un gusto|un placer|encantad[oa]|para servirle|para servirte|a la orden|a sus ordenes)( de (saludarte|saludarlo|saludarla|conocerte))?$/;
 /** Lo que sigue a un nombre completo dado sin que se lo pidieran ("Juan Pérez quiero saber mi saldo, cc …"). */
 const SELF_START = new Set(['quiero', 'quisiera', 'queria', 'necesito', 'necesitaba', 'tengo', 'tenia', 'debo', 'estoy', 'solicito', 'deseo',
   'requiero', 'busco', 'vivo', 'escribo', 'mi', 'mis', 'y', 'con', 'identificado', 'identificada', 'cedula', 'cc', 'documento', 'numero']);
 /** "La cédula correcta es…", "mi número completo es…": la palabra entre el documento y el "es" lo describe (no es un nombre). */
 const DOC_ADJECTIVE = /(?<![\p{L}])(c[eé]dula|documento|n[uú]mero|identificaci[oó]n|cc)\s+[\p{L}]+\s+(?=(?:es|era|ser[ií]a)(?![\p{L}]))/giu;
+/** Palabras que, con mayúscula tras un nombre ("Pedro Asesor", "Juan Bien"), no son su apellido. */
+const NOT_SURNAME_WORDS = new Set(`bien mal aqui alla aca ahora ya mas tambien asesor asesora cliente usuario usuaria titular deudor deudora
+  cedula documento numero nombre cartera gracias favor porfa tarde tardes noche noches dia dias manana luego despues hoy ayer saludos
+  bendiciones gusto placer`.split(/\s+/));
+/** "¿Cómo estás?", "¿qué tal?", "bien, ¿y tú?": un saludo que pregunta; no es una pregunta del tema ni el nombre. */
+const SOCIAL_ONLY = /^(?:y )?(?:(?:tu|usted|ustedes) )?(?:como (?:estas|esta|estan|vas|va|te va|le va|les va|amaneciste|amanecio|amanecieron|ha estado|has estado|han estado|te ha ido|le ha ido)|que tal|que mas|que hubo|quiubo|todo bien|(?:muy )?bien(?: gracias)?(?: y (?:tu|usted))?|y (?:tu|usted))(?: (?:tu|usted|ustedes|todo bien|por alla|por aca))?$/;
+/**
+ * Lo que sigue al nombre cuando habla de otra persona: "Carlos Mora me dijo que les escribiera", "Ana Ruiz es mi
+ * mamá", "Pedro Gómez el de cartera me llamó", "Jorge Pérez me recomendó este chat".
+ */
+const OTHER_PERSON = /^(?:(?:me|nos|le|les|te) (?:dijo|dijeron|pidio|pidieron|recomendo|recomendaron|mando|mandaron|remitio|remitieron|escribio|escribieron|atendio|atendieron|dio|dieron|hablo|hablaron|conto|contaron|envio|enviaron|refirio|indico|indicaron|sugirio|aconsejo|explico|comento|informo|contacto|contactaron|marco|cobro|cobraron|ayudo|vendio|dejo|colgo|cito|busco|puso|presto|paso|llamaron|dice|dicen|pide|piden|recomienda|manda|mandan)|(?:es|era|fue) (?:mi|el|la|un|una|su)(?! nombre\b)|(?:el|la) de|de (?:cartera|la empresa|ustedes)|quien|que me)\b/;
 
 /**
  * Nombre en una respuesta, sin "me llamo" ("Juan Pérez", "Juan Pérez 1002003 general", "Con Pedro", "Andrés, mucho
@@ -599,12 +691,16 @@ function looseName(
     segs.push({ body: stripLead(m[1]), question: m[2] === '?' || /¿\s*$/.test(t.slice(0, m.index!)) });
   }
   const refusal = (s: string) => NOT_A_NAME_RE.test(normalize(s));
-  const content = (s: { body: string }) => !!s.body && !fillerOnly(s.body) && !refusal(s.body);
+  const social = (s: { body: string }) => !!s.body && SOCIAL_ONLY.test(normalize(s.body));
+  // "ok linda, Juan Pérez …", "listo mi reina, …": el apelativo es relleno.
+  const content = (s: { body: string }) => !!s.body && !fillerOnly(s.body) && !refusal(s.body) && !endearmentOnly(s.body) && !social(s);
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
+    // "Hola, ¿cómo estás? Luisa": la pregunta del saludo no corta la lectura.
+    if (social(seg)) continue;
     if (seg.question) return null;
     let body = seg.body;
-    if (!body || refusal(body)) continue;
+    if (!body || refusal(body) || endearmentOnly(body)) continue;
     // "Con Pedro", "con Juan Pérez, cc …": con quién habla el bot.
     body = body.replace(/^con(?![\p{L}])\s+/iu, '');
     const words = readName(body, opts.stop);
@@ -613,7 +709,8 @@ function looseName(
       if (fillerOnly(body)) continue;
       return null;
     }
-    const tail = normalize(body.slice(endOf(body, words))).split(' ').filter(Boolean);
+    const rawTail = body.slice(endOf(body, words)).trim();
+    const tail = normalize(rawTail).split(' ').filter(Boolean);
     // "Juan de Pereira", "Laura de Ecopetrol": de dónde es o de qué empresa viene no le quita el nombre.
     const origin = ['de', 'del', 'desde'].includes(tail[0]) && tail.length <= 3
       && tail.slice(1).every((w) => PLACES.has(w) || isCommonWord(w) || !!opts.stop?.has(w) || TAIL_OK.has(w));
@@ -630,9 +727,21 @@ function looseName(
     const known = knownFirst && (!WORD_NAMES.has(norm[0]) || capitalized(core[0]));
     const loose = (knownFirst || nameLike) && core.length <= 3;
     const asking = mode === 'name' || mode === 'handoff';
+    // "Carlos Mora me dijo que les escribiera": el nombre es de otra persona.
+    const otherPerson = OTHER_PERSON.test(tail.join(' ')) || /^me\s+llamó/iu.test(rawTail) || (tail[0] === 'me' && tail[1] === 'llamo' && tail.length > 2);
+    // "Laura Prueba", "Carlos Alemán", "Ana Claro" (todo el mensaje, con mayúscula, cuando el bot pide el nombre): la
+    // palabra común que sigue es su apellido; una marca o una ciudad no ("Ana Claro" → "Ana").
+    const tailWord = clean(rawTail.split(/\s+/)[0] ?? '');
+    if (!settled && tail.length === 1 && alone && asking && (knownFirst || nameLike) && core.length <= 3 && capitalized(tailWord)
+      && LETTERS.test(tailWord) && !GREETING_AFTER.test(tail[0]) && !CONNECTORS.has(tail[0]) && !OTHER_PERSON.test(tail[0])
+      && !NOT_SURNAME_WORDS.has(tail[0]) && !TITLES.has(tail[0])) {
+      const brandOrPlace = COMMON_BRAND(tail[0]) || PLACES.has(tail[0]) || !!opts.stop?.has(tail[0]) || ENDEARMENTS.has(tail[0]);
+      if (core.length === 1 && PLACES.has(norm[0]) && !FIRST_NAMES.has(norm[0])) return null;
+      return finish(brandOrPlace ? words : [...words, tailWord]);
+    }
     let ok: boolean;
     if (!settled) {
-      ok = full
+      ok = full && !otherPerson
         ? (mode === 'data' ? i === 0 && knownFirst && withSurname && SELF_START.has(tail[0]) : true)
         : known && greeting && mode !== 'data';
     } else if (full) ok = mode !== 'data' || alone;
@@ -650,12 +759,12 @@ function looseName(
 }
 
 /** "Prefiero no decirlo", "anónimo", "no te lo voy a decir": se niega a dar el nombre. */
-const NOT_A_NAME_RE = /\b(prefiero no|preferiria no|prefiero reservar\w*|no (quiero|deseo|puedo) (dar|decir|decirte|decirlo|compartir)|no (te |le |les )?(lo |la )?(voy a )?(doy|dare|digo|dire|dar|decir)|no lo (digo|doy)|anonim[oa]|confidencial|secreto|reservad[oa]|para que (quieres|necesitas|quiere|necesita))\b/;
+const NOT_A_NAME_RE = /\b(prefiero no|preferiria no|prefiero reservar\w*|no (quiero|deseo|puedo) (dar|decir|decirte|decirlo|compartir)|no (te |le |les )?(lo |la )?(voy a )?(doy|dare|digo|dire|dar|decir)|no lo (digo|doy)|anonim[oa]|confidencial|secreto|reservad[oa]|para que (quieres|necesitas|quiere|necesita)|(que|no) (te|le|les) (importa|incumbe)|no (te|le|les) (interesa|incumbe)|no tengo (por que|porque) (decir|decirte|decirle|darte|darle|dar)|(eso )?es (personal|privado)|no es (tu|su) (asunto|problema))\b/;
 
 /* ---------- todo junto ---------- */
 
 /** Saludos y cortesías que acompañan los datos ("hola, ¿qué tal? soy Luisa", "Carlos Gómez, para servirle"): no son un tema. */
-const SOCIAL_WORDS = /\b(que tal|que mas|que hubo|quiubo|como (estas|esta|estan|vas|va|te va|le va|les va|amaneciste|amanecio|amanecieron|ha estado|has estado|han estado)|todo bien|para servirle|para servirte|a la orden|a sus ordenes|a tu orden|un placer|encantad[oa]|igualmente|bendiciones)\b/g;
+const SOCIAL_WORDS = /\b(que tal|que mas|que hubo|quiubo|como (estas|esta|estan|vas|va|te va|le va|les va|amaneciste|amanecio|amanecieron|ha estado|has estado|han estado)|todo bien|para servirle|para servirte|a la orden|a sus ordenes|a tu orden|un placer|encantad[oa]|igualmente|bendiciones|(muy )?bien( gracias)?( y (tu|usted))?|y (tu|usted)|(buen|buena|buenos|buenas|feliz|lindo|linda|bonito|bonita|excelente|bendecido|bendecida) (dia|dias|tarde|tardes|noche|noches))\b/g;
 const DATA_WORDS = /\b(me llamo|mi nombre completo es|mi nombre es|mi nombre|soy|nombre|numero|de documento|documento|tarjeta de identidad|tarjeta|identidad|cedula de ciudadania|cedula de extranjeria|ciudadania|extranjeria|registro civil|cedula|cc|c c|identificacion|identificado|identificada|mi cartera es|cartera|area|es|mi|y|de|el|la|te|estoy|diciendo|dije|que|ya|te lo|lo|digo|son|mis|datos|aqui|van|paso|escribe|completo|apellido|apellidos|cliente|esta|este|por favor|gracias|muchas|listo|ok|hola|buenas|buenos|dias|tardes|noches|mucho gusto|gusto|un|con|perdon|disculpa|disculpe|me equivoque|me confundi|corrijo|el correcto|la correcta|el bueno|mejor dicho|quise decir|era|es correcto|correcto|si|no|bueno|claro|pues|porfa|favor|saludos|senor|senora|doctor|doctora|le habla|habla|le|les)\b/g;
 /** Lo que queda junto a los datos y sí es un tema: "Andrés, ¿y el correo?", "me llamo Ana, el teléfono?". */
 const CONTENT_HINT = /\b(correo|correos|email|mail|telefono|telefonos|linea|lineas|whatsapp|direccion|direcciones|ubicacion|sede|sedes|oficina|oficinas|horario|horarios|precio|precios|costo|costos|tarifa|tarifas|servicio|servicios|vacante|vacantes|empleo|trabajo|pagina|link|nit)\b/;
@@ -683,19 +792,24 @@ export function extractVisitorData<P extends PortfolioTerms>(message: string, po
     stop, asked: ctx.asked === 'name' || (ctx.asked === 'handoff' && missing.includes('name')), onlyName, withDocument: !!doc,
   });
   let name = explicit?.name ?? null;
-  const fixed = name ? null : nameCorrection(message, stop);
+  const fixed = name ? null : (nameCorrection(message, stop) ?? nameSwap(message, ctx.savedName, stop));
   name ??= fixed;
   const analysis = analyze(message);
   // Un cierre ("gracias, feliz noche"), un saludo ("aló", "hey") o la respuesta a la oferta ("sí", "simón") no traen un nombre.
-  // Una sola palabra que es un sí o un no ("simón", "nel", "ok") tampoco: ante la duda no se guarda.
+  // Un sí o un no ("simón", "nel", "ok", "nel, gracias") tampoco: ante la duda no se guarda.
   const answering = analysis.intent === 'thanks' || analysis.intent === 'greeting'
-    || ((ctx.asked === 'offer' || !n.includes(' ')) && yesNo(message) !== null);
+    || ((ctx.asked === 'offer' || !n.includes(' ') || isPureYesNo(message)) && yesNo(message) !== null);
   if (!name && !answering) {
     const common = { stop, onlyName, withDocument: !!doc, portfolioMissing: missing.includes('portfolio') };
     // "Disculpa, la cédula correcta es 1020304051": corrige el documento; de ahí solo sale un nombre claro.
     if (ctx.asked && nameAsked) name = looseName(message, terms, correction && doc ? 'correction' : ctx.asked, common);
     else if (correction) name = looseName(message, terms, 'correction', common);
     else if (!ctx.asked && doc) name = looseName(message, terms, 'data', common);
+    else if (!ctx.asked && !ctx.savedName && SELF_INTRO.test(n)) {
+      // "Ana López, mucho gusto": se presenta sin que se lo pidieran; cuenta un nombre completo.
+      const intro = looseName(message, terms, 'name', common);
+      if (intro && intro.split(' ').length >= 2) name = intro;
+    }
   }
   const askedPortfolio = collecting && missing.includes('portfolio');
   const consumed = new Set(name ? normalize(name).split(' ') : []);
@@ -709,6 +823,8 @@ export function extractVisitorData<P extends PortfolioTerms>(message: string, po
     : undefined;
   const portfolio = stated?.portfolio;
   const phone = findPhone(message, ctx.companyNumbers);
+  // "No, la de Offcorss", "Flamingo no, Offcorss": también corrige (la cartera).
+  const corrected = correction || correctsWithPause(message) || !!stated?.corrected;
 
   // Lo que sobra sin los datos: decide si el mensaje traía además una pregunta o un tema.
   let rest = normalize(message.replace(/(?<![\p{L}\d])[A-Za-z]{1,3}-?\d{5,9}(?!\d)/gu, ' ').replace(/\+?\d[\d.,'’\s-]*/g, ' '));
@@ -721,14 +837,20 @@ export function extractVisitorData<P extends PortfolioTerms>(message: string, po
     for (const term of termsOf(portfolio)) rest = rest.replace(normalize(term), ' ');
     for (const w of stems(portfolio.name)) rest = rest.replace(new RegExp(`\\b${escapeRe(w)}\\w*\\b`, 'g'), ' ');
   }
-  rest = rest.replace(/\b(pasaporte|nit|ppt|pep)\b/g, ' ').replace(DATA_WORDS, ' ').replace(/\s+/g, ' ').trim();
+  rest = rest.replace(/\b(pasaporte|nit|ppt|pep)\b/g, ' ');
+  // Lo mismo sin quitar las palabras de los datos: "Juan Pérez qué horario tienen" → "que horario tienen" (sí pregunta).
+  const said = `${rest.replace(/\s+/g, ' ').trim()} `
+    .replace(/^(?:(?:me llamo|mi nombre (?:completo )?es|mi nombre|soy|mi (?:numero de )?(?:cedula|documento)(?: es)?|cc|cedula|documento|y|e|hola|buenas|buenos dias|buenas tardes|buenas noches)\s+)+/, '')
+    .trim();
+  rest = rest.replace(DATA_WORDS, ' ').replace(/\s+/g, ' ').trim();
 
   return {
     phone, document: doc?.value, documentExplicit: !!doc?.explicit,
     portfolioKey: portfolio?.key, portfolioExplicit: !!stated?.explicit,
-    name: name ?? undefined, nameExplicit: !!explicit || !!fixed || (correction && !!name), correction,
+    name: name ?? undefined, nameExplicit: !!explicit || !!fixed || (correction && !!name), correction: corrected,
     asks: /[?¿]/.test(message),
     rest: doc || portfolio || name || phone ? rest : normalize(message),
+    said: doc || portfolio || name || phone ? said : normalize(message),
   };
 }
 

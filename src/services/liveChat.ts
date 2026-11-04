@@ -6,7 +6,7 @@ import { conflict, forbidden, notFound } from '../utils/errors';
 import { normalize } from '../utils/text';
 import { analyze, COMMERCIAL_RE, HUMAN_NEGATED, isCancel, isHold, isRefuse, isWaitQuestion, isWhyData, mentionsCase, topicText, yesNo } from './intents';
 import { FIRST_NAMES } from './lexicon';
-import { deniedName, extractVisitorData, type CaptureContext, type DataField, type Extracted } from './visitorData';
+import { deniedName, extractVisitorData, namedPortfolios, type CaptureContext, type DataField, type Extracted } from './visitorData';
 
 export type ChatStatus = 'BOT_ACTIVO' | 'EN_ESPERA_ASESOR' | 'TOMADO_POR_ASESOR' | 'REMITIDO_WHATSAPP' | 'CERRADO' | 'ABANDONADO';
 export type SenderType = 'USER' | 'BOT' | 'ADVISOR' | 'SYSTEM';
@@ -33,6 +33,9 @@ const REOPEN_SQL = `UPDATE chat_sessions SET status = CASE WHEN waiting_since IS
 const HUMAN_FILLER = /\b(quiero|quisiera|necesito|deseo|me gustaria|gustaria|puedo|podria|podrian|pueden|puede|puedes|podrias|por favor|favor|hablar|comunicarme|comunicar|comunicaran|comunicara|contactar|contactarme|pasar|pasarme|pasen|pase|pasame|paseme|pasenme|pasas|pasa|pases|pasarias|comunicame|comuniqueme|comuniquenme|comunicas|comunican|conectame|conecteme|conectenme|conectas|conectar|conectarme|transfiereme|transfierame|transfieranme|con|un|una|el|la|al|los|las|de|sus|mi|tu|su|este|esta|ese|esa|alguno|alguna|algun|hay|disponible|disponibles|asesor|asesora|asesores|asesoras|agente|agentes|operador|operadora|persona|humano|real|alguien|gerente|encargado|encargada|jefe|jefa|supervisor|supervisora|coordinador|coordinadora|director|directora|funcionario|funcionaria|representante|ejecutivo|ejecutiva|otro|que|me|nos|llamar|llamarme|llamen|llame|llamara|contacten|contacte|atencion|humana|ahora|ya|urgente|porfa|porfavor|otra|vez|nuevamente|nuevo|directamente|mismo|ser|atendido|atendida|por|gracias|dame|deme)\b/g;
 /** "¿Me puedes pasar con uno?" tras nombrar a un asesor: pide uno, no trae un tema. */
 const REFERS_ONE = /\b(pasar|pasarme|pasas|pasame|paseme|comunicar|comunicarme|comunicas|hablar|conectar|conectarme|conectas) con (uno|una|el|ella)\b/;
+/** "La primera", "la segunda opción", "la última": elige entre las carteras que nombró el bot. */
+const ORDINALS = ['primero', 'segundo', 'tercero', 'cuarto'];
+const ORDINAL = /^(?:(?:es|seria|creo que)\s+)?(?:la |el )?(primera|primero|segunda|segundo|tercera|tercero|cuarta|cuarto|ultima|ultimo)(?: opcion| de (?:esas|esos|las dos|los dos))?(?: (?:por favor|gracias))?$/;
 
 /**
  * Veces que se piden los datos que faltan a quien va a pasar con un asesor: si el visitante deja de darlos tras
@@ -83,6 +86,11 @@ export interface BotState {
    * Se olvidan, como la toma, al cancelar, pasar a la cola o con un aviso del sistema.
    */
   waived: Set<DataField>;
+  /**
+   * Lo que el bot dijo en esta toma de datos (desde la última vez que se canceló, pasó a la cola o hubo un aviso):
+   * así recuerda, p. ej., entre qué carteras le preguntó ("¿Tu consulta es de Flamingo o de Offcorss?").
+   */
+  collectTexts: string[];
 }
 
 export async function botState(q: Queryable, companyId: string, conversationId: string): Promise<BotState> {
@@ -93,10 +101,12 @@ export async function botState(q: Queryable, companyId: string, conversationId: 
   let handoffAsks = 0;
   let stalledAsks = 0;
   let waived = new Set<DataField>();
+  let collectTexts: string[] = [];
   for (const r of rows) {
     // Cancelar, pasar a la cola, o que un asesor tome o devuelva el chat cierran la toma de datos: empieza de cero.
-    if (r.sender_type === 'SYSTEM' || r.kind === 'handoff_cancel') { handoffAsks = 0; stalledAsks = 0; waived = new Set(); }
-    else if (r.kind === 'data_request' && r.field === 'handoff') {
+    if (r.sender_type === 'SYSTEM' || r.kind === 'handoff_cancel') { handoffAsks = 0; stalledAsks = 0; waived = new Set(); collectTexts = []; continue; }
+    collectTexts.push(r.content);
+    if (r.kind === 'data_request' && r.field === 'handoff') {
       handoffAsks++;
       // Un pedido hecho justo después de recibir un dato reinicia la cuenta: el visitante está colaborando.
       stalledAsks = r.progress === 'true' ? 1 : stalledAsks + 1;
@@ -107,7 +117,7 @@ export async function botState(q: Queryable, companyId: string, conversationId: 
   return {
     lastKind: last ? (last.sender_type === 'SYSTEM' ? 'system' : last.kind) : null,
     lastField: last && last.sender_type === 'BOT' ? last.field : null,
-    handoffAsks, stalledAsks, waived,
+    handoffAsks, stalledAsks, waived, collectTexts: collectTexts.slice(-6),
     // Pedir los datos para el asesor también pregunta el nombre: si no lo dio, no se le vuelve a preguntar.
     nameAsked: rows.some((r) => r.kind === 'data_request' && (r.field === 'name' || r.field === 'handoff')),
     lastText: last?.content ?? null,
@@ -175,8 +185,8 @@ export async function startUserTurn(
 ): Promise<UserTurn> {
   return db.tx(async (q) => {
     const existed = await q.query('SELECT 1 FROM chat_sessions WHERE company_id = $1 AND public_session_id = $2', [company.id, publicSession.id]);
-    const portfolios = (await q.query<{ id: string; key: string; name: string; aliases: string[] }>(
-      'SELECT id, key, name, aliases FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id])).rows;
+    const portfolios = (await q.query<{ id: string; key: string; name: string; aliases: string[]; is_default: boolean }>(
+      'SELECT id, key, name, aliases, is_default FROM portfolios WHERE company_id = $1 AND active ORDER BY sort_order, name', [company.id])).rows;
     const initial = await ensureConversation(q, company.id, publicSession.id, profile);
     let current = (await q.query<LiveChatSession>('SELECT * FROM chat_sessions WHERE id = $1 AND company_id = $2 FOR UPDATE', [initial.id, company.id])).rows[0];
     // El visitante volvió tras ser marcado como ausente: la conversación se reabre donde estaba.
@@ -184,8 +194,8 @@ export async function startUserTurn(
     if (current.status === 'CERRADO' || current.status === 'REMITIDO_WHATSAPP') throw conflict('La conversación ya finalizó');
 
     // Lo último del lado del bot (su mensaje o un aviso del sistema): dice qué estaba pidiendo.
-    const lastBot = (await q.query<{ sender_type: SenderType; kind: string | null; field: string | null }>(
-      `SELECT sender_type, metadata->>'kind' AS kind, metadata->>'field' AS field FROM chat_messages
+    const lastBot = (await q.query<{ sender_type: SenderType; kind: string | null; field: string | null; content: string }>(
+      `SELECT sender_type, metadata->>'kind' AS kind, metadata->>'field' AS field, content FROM chat_messages
        WHERE company_id = $1 AND chat_session_id = $2 AND sender_type IN ('BOT','SYSTEM')
        ORDER BY created_at DESC, id DESC LIMIT 1`, [company.id, current.id])).rows[0];
     const withBot = current.status === 'BOT_ACTIVO';
@@ -207,8 +217,18 @@ export async function startUserTurn(
     const nameLoose = !!savedName && !/\s/.test(savedName) && !FIRST_NAMES.has(normalize(savedName));
     // Con una sola cartera activa no hay nada que elegir: no se busca en el texto (se asigna al pasar a la cola).
     const x = extractVisitorData(message, choosePortfolio ? portfolios : [], {
-      asked, missing, companyNumbers: opts.companyNumbers, siteWords: opts.siteWords, nameLoose: withBot && nameLoose,
+      asked, missing, companyNumbers: opts.companyNumbers, siteWords: opts.siteWords, nameLoose: withBot && nameLoose, savedName: current.visitor_name,
     });
+    // "¿Tu consulta es de Flamingo o de Offcorss?" → "la primera": la cartera es la que nombró el bot en ese orden.
+    if (choosePortfolio && !x.portfolioKey && asked === 'handoff' && missing.includes('portfolio')) {
+      const pick = ORDINAL.exec(normalize(message));
+      if (pick) {
+        const offered = namedPortfolios(lastBot?.content ?? '', portfolios).list;
+        const options = offered.length >= 2 ? offered : portfolios;
+        const chosen = pick[1].startsWith('ultim') ? options.at(-1) : options[ORDINALS.indexOf(pick[1].replace(/a$/, 'o'))];
+        if (chosen) x.portfolioKey = chosen.key;
+      }
+    }
 
     const captured: DataField[] = [];
     const replaced: DataField[] = [];
@@ -246,6 +266,15 @@ export async function startUserTurn(
     } else if (found && found.id === portfolio && autoPortfolio && current.status !== 'TOMADO_POR_ASESOR') {
       take('portfolio', null); // confirmó la que ya tenía asignada
       portfolioAuto = false;
+    } else if (!found && current.status === 'EN_ESPERA_ASESOR' && choosePortfolio && hasPortfolio && !autoPortfolio) {
+      // En la cola, "no es Flamingo" con Flamingo elegida: deja de ser la suya. Pasa a la cartera por defecto, marcada como
+      // puesta por el sistema, para que algún asesor la vea y la confirme; el bot le pregunta cuál es.
+      const said = namedPortfolios(message, portfolios);
+      if (said.negated && said.list.some((p) => p.id === portfolio)) {
+        portfolio = portfolios.find((p) => p.is_default)?.id ?? portfolio;
+        portfolioAuto = true;
+        cleared.push('portfolio');
+      }
     }
 
     // El tema de la consulta (lo que verán el asesor y el WhatsApp) es el primer mensaje con contenido real: no un
@@ -263,11 +292,14 @@ export async function startUserTurn(
     // Mientras se le piden los datos, solo un asunto suyo es el tema ("es por una deuda que ya pagué"); una pregunta
     // por el documento, el correo o la espera no ("¿sirve el pasaporte?", "Juan Pérez 1020304050 y cuál es el correo").
     const collectingReply = asked === 'handoff' && intent !== 'sensitive' && !mentionsCase(normalize(topic)) && !COMMERCIAL_RE.test(nm);
+    // "No soy Pedro, me confundiste" o "no me llamo Pedro" corrigen el nombre: no son el tema.
+    const deniesName = cleared.includes('name') || !!deniedName(message);
     const topical = topic.split(' ').filter((w) => w.length >= 3).length >= 2 && rest.length > 0 && !dataReply && !collectingReply
       && (withBot ? ['other', 'sensitive', 'human'].includes(intent) : intent === 'sensitive')
       && !isCancel(message) && !isRefuse(message) && !isHold(message) && !isWaitQuestion(message) && !isWhyData(message) && yesNo(message) === null
-      && !(x.correction && hadData);
-    const subject = !current.subject && topical ? subjectText(message, x).slice(0, 300) : current.subject;
+      && !(x.correction && hadData) && !deniesName;
+    // "No me pases con ningún asesor, solo dime el correo": el tema es lo que pide, sin la negativa.
+    const subject = !current.subject && topical ? subjectText(negated ? withoutAdvisorRefusal(message) : message, x).slice(0, 300) : current.subject;
 
     const conversation = (await q.query<LiveChatSession>(
       `UPDATE chat_sessions SET visitor_name = $3, document = $4, portfolio_id = $5, subject = $6, portfolio_auto = $7,
@@ -286,22 +318,53 @@ export async function startUserTurn(
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Letra con o sin tilde: el nombre guardado ("Pérez") se busca igual si lo escribió sin tilde ("perez"). */
+const LOOSE_LETTER: Record<string, string> = { a: '[aáà]', e: '[eéè]', i: '[iíì]', o: '[oóò]', u: '[uúüù]', n: '[nñ]' };
+const loosePattern = (word: string) => [...normalize(word)].map((c) => LOOSE_LETTER[c] ?? escapeRe(c)).join('');
+const GREET = String.raw`(?:(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[,!.\s]+)`;
+const INTRO = String.raw`(?:me\s+llamo|mi\s+nombre\s+(?:completo\s+)?es|mi\s+nombre|soy|le\s+escribe|te\s+escribe|les\s+escribe|le\s+habla|te\s+habla|les\s+habla|habla|de\s+parte\s+de)`;
+/** "Mi cédula es…", "identificado con cédula…", "con NIT…", "y mi cc es…": la frase que acompaña al documento. */
+const DOC_LEAD = String.raw`(?:(?:,\s*|\s+)(?:y|e)\s+)?(?:identificad[oa]s?\s+con\s+|con\s+)?(?:(?:mi|el|la|su)\s+)?(?:n[uú]mero\s+de\s+)?(?:c\.?\s?c\.?|c[eé]dula(?:\s+de\s+(?:ciudadan[ií]a|extranjer[ií]a))?|documento(?:\s+de\s+identidad)?|nit|pasaporte|ppt|identificaci[oó]n|n[uú]mero)?\s*(?:es\s+|no\.?\s*|#\s*|:\s*)?`;
 /**
  * El tema tal como lo escribió, sin sus datos: "Juan Pérez quiero saber mi saldo, cc 1020304050" → "quiero saber mi
- * saldo" (el nombre y el documento ya se ven aparte en el panel y en el WhatsApp).
+ * saldo"; "tengo una deuda, me llamo Ana Gómez y mi cédula es 43123456" → "tengo una deuda"; "buenas, soy Lucero Robles
+ * y quiero saber el horario" → "quiero saber el horario". El nombre y el documento ya se ven aparte en el panel y en el
+ * WhatsApp. Si no queda nada que diga el tema, no hay asunto ('').
  */
-function subjectText(message: string, x: Extracted): string {
+export function subjectText(message: string, x: Pick<Extracted, 'document' | 'name'>): string {
   let s = message;
   if (x.document) {
     const digits = x.document.replace(/\D/g, '').split('').join('[.\\s-]?');
-    s = s.replace(new RegExp(`(?:(?:mi\\s+)?(?:c\\.?\\s?c\\.?|c[eé]dula(?:\\s+de\\s+ciudadan[ií]a)?|documento|nit|pasaporte|n[uú]mero(?:\\s+de\\s+(?:documento|c[eé]dula))?)\\s*(?:es|no\\.?|#|:)?\\s*)?${digits}`, 'iu'), ' ');
+    s = s.replace(new RegExp(`${DOC_LEAD}${digits}(?:-\\d)?`, 'iu'), ' ');
   }
   if (x.name) {
-    const name = x.name.split(/\s+/).map(escapeRe).join('\\s+');
-    s = s.replace(new RegExp(`^\\s*(?:(?:hola|buenas(?:\\s+(?:tardes|noches))?|buenos\\s+d[ií]as)[,!.\\s]+)?(?:(?:me llamo|mi nombre es|soy)\\s+)?${name}(?![\\p{L}])[\\s,.;:]*`, 'iu'), '');
+    const name = x.name.split(/\s+/).map(loosePattern).join('\\s+');
+    // Al inicio ("Hola, me llamo Juan Pérez y…", "Juan Pérez quiero…") o en medio con su presentación (", me llamo Ana").
+    s = s.replace(new RegExp(`^\\s*${GREET}?(?:${INTRO}\\s+)?${name}(?![\\p{L}])`, 'iu'), ' ');
+    s = s.replace(new RegExp(`(?:[,;]\\s*|\\s+(?:y|e)\\s+|\\s+)${INTRO}\\s+${name}(?![\\p{L}])`, 'iu'), ' ');
   }
-  const out = s.replace(/\s+([,.;:!?])/g, '$1').replace(/([,;:])(?=[,;:.!?])/g, '').replace(/\s{2,}/g, ' ').replace(/^[\s,.;:]+|[\s,;:]+$/g, '').trim();
-  return out.length >= 3 ? out : message;
+  let out = s.replace(/\s+([,.;:!?])/g, '$1').replace(/([,;:])(?=\s*[,;:.!?])/g, '').replace(/\s{2,}/g, ' ').trim();
+  if (s !== message) {
+    // Lo que unía los datos con el tema ya no une nada: "y quiero saber…", "y, ¿cuánto debo?", "…con Flamingo y". (Un
+    // "qué" del inicio es la pregunta: "¿qué servicios ofrecen?" queda igual.)
+    for (let i = 0; i < 3; i++) out = out.replace(/^[\s,.;:]+/, '').replace(/^(?:y|e|pero|entonces|pues)(?![\p{L}])[\s,]*/iu, '');
+    out = out.replace(/(?:[\s,;:]+(?:y|e|con|de|del|o))+[\s,;:]*$/iu, '').replace(/[\s,;:]+$/g, '').trim();
+    // "de Bancolombia, queremos cotizar…" (quedó de "soy Laura de Bancolombia"): la empresa va como etiqueta.
+    out = out.replace(/^de\s+((?:\p{Lu}[\p{L}&.-]*)(?:\s+\p{Lu}[\p{L}&.-]*){0,3})\s*[,:]\s*/u, '$1: ');
+  }
+  // Lo que queda debe decir algo: "por favor" o "gracias" solos no son un tema.
+  const said = normalize(out).replace(/\b(por favor|porfa|porfavor|porfis|plis|gracias|muchas|ok|listo|bueno|pues|si|no|hola|buenas|solo)\b/g, ' ')
+    .split(' ').filter((w) => w.length >= 3);
+  return said.length >= 2 || (said.length === 1 && /[?¿]/.test(out)) ? out : '';
+}
+
+/**
+ * "No me pases con ningún asesor, solo dime el correo" → "solo dime el correo": la negativa al asesor no es el tema.
+ * Se quitan las partes de la frase (entre comas o puntos) que solo niegan al asesor o las llamadas.
+ */
+function withoutAdvisorRefusal(message: string): string {
+  return message.split(/(?<=[,;.!?])/).filter((part) => !(HUMAN_NEGATED.test(normalize(part)) && normalize(topicText(part)).split(' ').filter((w) => w.length >= 3).length < 2))
+    .join('').replace(/^[\s,;.!]+/, '').trim();
 }
 
 /** El tema guardado era este mensaje y resultó no serlo (p. ej. una pregunta fuera de tema): se borra. */
