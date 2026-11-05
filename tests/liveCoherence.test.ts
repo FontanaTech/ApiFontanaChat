@@ -590,21 +590,49 @@ describe('empresa con varias carteras', () => {
     // Con la cartera: pasa directo a la cola de esa cartera, sin pedir nombre ni documento.
     const a = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
     const [ask, done] = await talk(a, 'quiero hablar con un asesor', 'es con almacenes flamingo');
-    expect(ask.message).toMatch(/¿De qué cartera es tu consulta: .*Flamingo.*\? Si me la indicas, te paso directamente con un asesor de esa cartera\./);
+    expect(ask.message).toMatch(/¿De qué cartera es tu consulta: .*Flamingo.*\? Si me la indicas, te paso directamente con un asesor de esa cartera; si no, te paso con un asesor en general\./);
     expect(ask.message).not.toMatch(/nombre|documento/i);
     expect(done).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     expect(done.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
     expect((await a.get('/conversation')).body.conversation.portfolio_id).toBe(flamingo.body.id);
-    // Sin la cartera: primero se le avisa que pasará al azar; si insiste, pasa a la cola en una cartera de la lista.
+    // Sin la cartera ya se le avisó que pasa con un asesor en general: si no la sabe, o pide que lo pasen, va al azar de una vez.
     const b = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
-    const [, warn, random] = await talk(b, 'quiero hablar con un asesor', 'no sé', 'pásame ya');
-    expect(warn.type).toBe('answer');
-    expect(warn.message).toMatch(/te paso directamente con un asesor de esa cartera; si no, te paso con un asesor de forma aleatoria/);
+    const [, random] = await talk(b, 'quiero hablar con un asesor', 'no sé');
     expect(random).toMatchObject({ type: 'answer', conversation: { status: 'BOT_ACTIVO' } });
     expect(random.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
     expect(random.message).toMatch(/de forma aleatoria/);
+    const b2 = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
+    const [, now] = await talk(b2, 'quiero hablar con un asesor', 'transfiéreme ya');
+    expect(now.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
+    expect(now.message).toMatch(/de forma aleatoria/);
+    const b3 = await publicClient(env, 'coherencia-cartera', 'https://cartera.test');
+    const [, any] = await talk(b3, 'quiero hablar con un asesor', 'con cualquiera, me da igual');
+    expect(any.waUrl).toMatch(/^https:[/][/]wa[.]me[/]/);
+    expect(any.message).toMatch(/de forma aleatoria/);
     const portfolios = (await sup.get(`/companies/${G.companyId}/portfolios`)).body.items.map((p: any) => p.id);
     expect(portfolios).toContain((await b.get('/conversation')).body.conversation.portfolio_id);
+  });
+
+  it('reconoce la cartera sin importar mayúsculas ni pequeños errores de escritura, y no confunde palabras comunes', async () => {
+    const G = await setupCompany(env, sup, { slug: 'coherencia-typos', name: 'Cobranzas Typos', origin: 'https://typos.test', advisors: 1 });
+    const flamingo = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo' });
+    const offcorss = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'offcorss', name: 'Offcorss' });
+    const claro = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'claro', name: 'Claro' });
+    const cases: Array<[string, string]> = [['FLAMINGO', flamingo.body.id], ['flamigno', flamingo.body.id], ['Falmingo', flamingo.body.id], ['es de ofcorss', offcorss.body.id], ['OFFCORS', offcorss.body.id], ['mi cartera es calro', claro.body.id]];
+    for (const [answer, id] of cases) {
+      const c = await publicClient(env, 'coherencia-typos', 'https://typos.test');
+      const [ask, done] = await talk(c, 'quiero hablar con un asesor', answer);
+      expect(ask.message, answer).toMatch(/¿De qué cartera es tu consulta/);
+      expect(done.waUrl, answer).toMatch(/^https:[/][/]wa[.]me[/]/);
+      expect(done.message, answer).not.toMatch(/aleatoria/);
+      expect((await c.get('/conversation')).body.conversation.portfolio_id, answer).toBe(id);
+    }
+    // Un nombre que se parece a una cartera pero es una palabra del idioma ('Clara') no la elige.
+    const d = await publicClient(env, 'coherencia-typos', 'https://typos.test');
+    await talk(d, 'quiero hablar con un asesor');
+    const [clara] = await talk(d, 'me llamo Clara');
+    expect((await d.get('/conversation')).body.conversation.portfolio_id).toBeNull();
+    expect(clara.waUrl).toBeUndefined();
   });
 
   // Flujo anterior (pedía nombre y documento para pasar con un asesor); desde el 2026-11-04 solo se pide la cartera.

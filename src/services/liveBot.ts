@@ -192,7 +192,7 @@ const WAITING = [
 /** Se remite a un asesor por WhatsApp (el panel puede tomar el chat, pero el visitante no cuenta con eso). */
 const WA_REFERRAL = 'Te remito con un asesor por WhatsApp: toca el botón para escribirle.';
 /** Remite sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
-const RANDOM_QUEUE = 'Te remito con un asesor de forma aleatoria por WhatsApp: toca el botón para escribirle. Si me indicas tu cartera, te remito con un asesor de esa cartera.';
+const RANDOM_QUEUE = 'Te remito con un asesor de forma aleatoria por WhatsApp: toca el botón para escribirle.';
 /** "Tengo una deuda atrasada y quiero hablar con un asesor" → "Tengo una deuda atrasada": el pedido del asesor no es la consulta. */
 const withoutAdvisorRequest = (subject: string) => subject
   .replace(/\s*(?:[,;]|\by\b|\bpero\b)?\s*(?:quiero|necesito|quisiera|deseo|requiero|me gustar[ií]a)\s+(?:hablar|comunicarme|que me (?:pasen|comuniquen|atiendan?)|un asesor|una asesora|pasar|contactar)[^.?!]*$/iu, '')
@@ -256,6 +256,10 @@ const niList = (parts: string[]) => (parts.length < 2 ? parts[0] ?? '' : `${part
 const BOTH_RE = /^(?:(?:es|son|seria|creo que)\s+)?(?:de |con )?(?:las dos|los dos|las 2|los 2|ambas|ambos|todas|todos|las tres|las 3|todas las anteriores)(?: (?:por favor|gracias|tengo deudas?|tengo deuda con las dos))?$/;
 /** "Ninguna", "ninguna de esas", "es otra": la cartera no es de la empresa. */
 const NONE_OF_THEM = /^(ninguna|ninguno|no es ninguna|otra|es otra|otra cartera|otra empresa)\b/;
+/** "Transfiéreme", "pásame ya", "que me comuniquen": quiere que lo pasen ya, sin dar la cartera. */
+const TRANSFER_NOW = /\b(transfier\w*|transfer\w*|pasame|paseme|pasenme|pasen|pasarme|comunic\w*|comuniqu\w*|remit\w*|conect\w*)\b/;
+/** "Con cualquiera", "me da igual", "el que sea": le da lo mismo cuál asesor. */
+const ANY_ADVISOR = /\b(cualquier(?:a)?|me da igual|da lo mismo|no importa|el que sea|la que sea|al azar|aleatori\w*|asesor en general|asesor general)\b/;
 /** Una palabra con pinta de entidad: una marca conocida ("Movistar") o un nombre propio con mayúscula que no es de uso diario. */
 const entityIn = (raw: string, leftover: string, capitalizedOk: boolean) => {
   const words = leftover.split(' ').filter((w) => w.length >= 3);
@@ -614,7 +618,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     const names = orList(opts.options ?? remembered ?? portfolioNames);
     const lead = joinText(ack, opening);
     const text = mode === 'start'
-      ? joinText(lead, `¿De qué cartera es tu consulta: ${names}? Si me la indicas, te paso directamente con un asesor de esa cartera.`)
+      ? joinText(lead, `¿De qué cartera es tu consulta: ${names}? Si me la indicas, te paso directamente con un asesor de esa cartera; si no, te paso con un asesor en general.`)
       : mode === 'continue'
         ? joinText(lead, `Para pasarte directamente con un asesor de tu cartera, dime cuál es: ${names}.`)
         : joinText(lead, `Si me indicas la cartera de tu consulta (${names}), te paso directamente con un asesor de esa cartera; si no, te paso con un asesor de forma aleatoria.`);
@@ -716,6 +720,11 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
       if (missing.length === 1) return escalate(joinText(handoffAck, both), false);
       return collect('remind', both, handoffAck, { waive: ['portfolio'] });
     }
+    // "Pásame con cualquiera", "transfiéreme ya", "me da igual": no da la cartera y pide que lo pasen; se le asigna un asesor al azar.
+    if (missing.includes('portfolio') && named.length === 0 && !userTurn.captured.includes('portfolio') && n.split(' ').length <= 10
+      && ((!question && TRANSFER_NOW.test(n)) || ANY_ADVISOR.test(n))) {
+      return escalate(joinText(handoffAck, 'Entendido.'));
+    }
     let refused = noneOffered ? null : refusedFields(body.message);
     // "No sé si es de Claro o de Flamingo", "no recuerdo si es Claro": no sabe la cartera (el asesor la confirma).
     if (!refused && missing.includes('portfolio') && named.length > 0 && !userTurn.captured.includes('portfolio')
@@ -731,7 +740,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
     // "No tengo cédula, tengo pasaporte AB123456": negó un dato que igual entregó; se sigue con lo que falta.
     // "No sé", "cualquiera", "no te la digo" sin haberle avisado aún: se le explica que con su cartera pasa directo y que,
     // si no, lo pasará con un asesor al azar. Si vuelve a insistir, pasa al azar.
-    if (refused && missing.includes('portfolio') && bot.handoffAsks < MAX_HANDOFF_DATA_REQUESTS) return collect('remind', 'Entiendo.');
+    // (Ya se le avisó desde la primera pregunta que sin cartera pasa con un asesor en general: pasa directo.)
     if (refused && !(progressed && missing.length > 0 && refused !== 'all' && !refused.some((f) => missing.includes(f)))) {
       // "No quiero dar mi cédula, solo dime el correo": pasa sin los datos y se responde la pregunta.
       const answer = refuseQuestion(body.message) ? await answerText() : null;

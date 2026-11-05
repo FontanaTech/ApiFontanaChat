@@ -261,7 +261,7 @@ const termsOf = (p: PortfolioTerms) => [p.key.replace(/[-_]/g, ' '), p.name, ...
  * Solo dice que se nombra, no que sea la del visitante (ver statedPortfolio).
  */
 export function matchPortfolio<P extends PortfolioTerms>(message: string, portfolios: P[]): P | undefined {
-  const words = new Set(stems(message));
+  const words = new Set(stems(fixPortfolioTypos(message, portfolios)));
   let best: { p: P; size: number } | undefined;
   for (const p of portfolios) {
     for (const term of termsOf(p)) {
@@ -271,6 +271,53 @@ export function matchPortfolio<P extends PortfolioTerms>(message: string, portfo
     }
   }
   return best?.p;
+}
+
+/** Distancia de edición entre dos palabras; una transposición de letras vecinas ("flamigno") cuenta como un solo error. */
+function editDistance(a: string, b: string): number {
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * Corrige en el mensaje las palabras mal escritas que se parecen a una palabra de una cartera ("flamigno", "ofcorss",
+ * "genral"): un error en nombres de 5 a 8 letras y hasta dos en los más largos. Solo se corrige una palabra que no es del
+ * idioma (así "clara" nunca pasa por "Claro"), que empieza con la misma letra y que se parece a una sola cartera. La
+ * mayúscula o minúscula no importa (el mensaje se compara normalizado).
+ */
+export function fixPortfolioTypos<P extends PortfolioTerms>(message: string, portfolios: P[]): string {
+  // Palabra de la cartera (raíz) → la palabra tal como se escribe en su nombre; y a qué cartera pertenece.
+  const vocab = new Map<string, { word: string; keys: Set<string> }>();
+  for (const p of portfolios) {
+    for (const term of termsOf(p)) {
+      for (const word of normalize(term).split(' ')) {
+        const s = stem(word);
+        if (word.length < 5 || FILLER.has(word)) continue;
+        const entry = vocab.get(s) ?? { word, keys: new Set<string>() };
+        entry.keys.add(p.key);
+        vocab.set(s, entry);
+      }
+    }
+  }
+  if (vocab.size === 0) return message;
+  return message.replace(/[\p{L}\p{N}]+/gu, (token) => {
+    const w = normalize(token);
+    if (w.length < 4 || /\d/.test(w) || vocab.has(stem(w)) || isSpanishWord(w) || FIRST_NAMES.has(w) || SURNAMES.has(w)) return token;
+    const near = [...vocab].filter(([s, v]) => {
+      const allowed = v.word.length >= 9 ? 2 : 1;
+      return v.word[0] === w[0] && Math.abs(v.word.length - w.length) <= allowed && Math.min(editDistance(w, v.word), editDistance(stem(w), s)) <= allowed;
+    });
+    const keys = new Set(near.flatMap(([, v]) => [...v.keys]));
+    // Si se parece a palabras de dos carteras distintas no se adivina.
+    return near.length === 1 && keys.size === 1 ? near[0][1].word : token;
+  });
 }
 
 interface Mention<P> { p: P; at: number; size: number; words: string[] }
@@ -329,7 +376,7 @@ const NEGATED_LEAD = /\b(no|ni|tampoco|sin)( es| era| son| fue)?( de| con| por| 
  * ("no es Flamingo"). Sirve para no decir "no encuentro esa cartera" cuando nombró una de las nuestras.
  */
 export function namedPortfolios<P extends PortfolioTerms>(message: string, portfolios: P[]): { list: P[]; negated: boolean } {
-  const text = message.replace(NO_THEN, '$1perdon ').replace(NO_PAUSE, `$1${NO_AFTER}$2`);
+  const text = fixPortfolioTypos(message, portfolios).replace(NO_THEN, '$1perdon ').replace(NO_PAUSE, `$1${NO_AFTER}$2`);
   const words = normalize(text).split(' ');
   const ack = ackPrefix(words);
   const seen = new Set<string>();
@@ -391,7 +438,7 @@ export function statedPortfolio<P extends PortfolioTerms>(
   message: string, portfolios: P[], asked: boolean | 'bare', consumed: Set<string> = new Set(),
   opts: { onlyPortfolio?: boolean; human?: boolean; offered?: string[] } = {},
 ): { portfolio: P; explicit: boolean; corrected?: boolean } | undefined {
-  const text = message.replace(NO_THEN, '$1perdon ').replace(NO_PAUSE, `$1${NO_AFTER}$2`);
+  const text = fixPortfolioTypos(message, portfolios).replace(NO_THEN, '$1perdon ').replace(NO_PAUSE, `$1${NO_AFTER}$2`);
   const found = mentionsOf(text, portfolios);
   if (found.length === 0) return undefined;
   const n = normalize(text);
