@@ -166,7 +166,8 @@ export class FontanaChatClient {
     return this.session;
   }
 
-  private resetSession() {
+  /** Olvida la sesión actual: la próxima petición crea una conversación nueva. */
+  resetSession() {
     this.session = null;
     try {
       this.storage.removeItem(this.storageKey);
