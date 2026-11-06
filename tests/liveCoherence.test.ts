@@ -613,6 +613,20 @@ describe('empresa con varias carteras', () => {
     expect(portfolios).toContain((await b.get('/conversation')).body.conversation.portfolio_id);
   });
 
+  it('el mensaje de WhatsApp no repite el pedido del asesor como si fuera la consulta (aunque venga con errores)', async () => {
+    const wa = async (...messages: string[]) => {
+      const c = await publicClient(env, 'coherencia', ORIGIN);
+      const out = await talk(c, ...messages);
+      return decodeURIComponent(String(out.at(-1).waUrl));
+    };
+    // "asesosr" y "aseor" se leen como "asesor": pasa a WhatsApp con el mensaje base, sin ofrecer ni arrastrar la frase como consulta.
+    for (const request of ['transfiéreme con un asesosr real', 'pásame con alguien por favor', 'quiero hablar con un asesor', 'necesito ayuda, un aseor']) {
+      expect(await wa(request), request).toMatch(/Quiero hablar con un asesor para solicitar información\. \(Ref\./);
+    }
+    // Con una consulta real, el mensaje la lleva sin el pedido.
+    expect(await wa('tengo una deuda atrasada y quiero hablar con un asesor')).toMatch(/Quiero consultar sobre: tengo una deuda atrasada\. \(Ref\./);
+  });
+
   it('reconoce la cartera sin importar mayúsculas ni pequeños errores de escritura, y no confunde palabras comunes', async () => {
     const G = await setupCompany(env, sup, { slug: 'coherencia-typos', name: 'Cobranzas Typos', origin: 'https://typos.test', advisors: 1 });
     const flamingo = await sup.post(`/companies/${G.companyId}/portfolios`, { key: 'flamingo', name: 'Flamingo' });

@@ -4,13 +4,13 @@ import type { PublicSession } from '../models/public';
 import { listPortfolios } from '../models/portfolios';
 import { HttpError } from '../utils/errors';
 import { createHandoff } from './handoff';
-import { joinText, normalize, tidy } from '../utils/text';
+import { editDistance, joinText, normalize, tidy } from '../utils/text';
 import {
   answerChat, asksContact, companyFacts, companyName, companyNumberText, helpTexts, identityAgainText, identityText, isComplaint, NAMES_ADVISOR, offerAdvisor,
   offTopicTexts, type ChatDeps, type ChatMoment, type ChatReply,
 } from './chat';
 import {
-  acceptsOffer, afterYes, analyze, announcesQuestion, asksWhichDocument, cancelOf, COMMERCIAL_RE, HUMAN_NEGATED, isConfused, isHold, isSensitive,
+  acceptsOffer, afterYes, analyze, announcesQuestion, asksWhichDocument, cancelOf, COMMERCIAL_RE, fixAdvisorTypos, HUMAN_NEGATED, isConfused, isHold, isSensitive,
   isWaitQuestion, isWhyData, looksLikeQuestion, mentionsCase, negatesAdvisorOnly, POSTPONE_WHEN, refusedFields, refuseQuestion, withoutQuestionTag, yesNo,
 } from './intents';
 import type { LiveNotify } from './liveEvents';
@@ -193,8 +193,18 @@ const WAITING = [
 const WA_REFERRAL = 'Te remito con un asesor por WhatsApp: toca el botón para escribirle.';
 /** Remite sin haber dicho su cartera: lo atiende un asesor de una cartera elegida al azar. */
 const RANDOM_QUEUE = 'Te remito con un asesor de forma aleatoria por WhatsApp: toca el botón para escribirle.';
+/** Palabras de un pedido de asesor ("transfiéreme con un asesor real", "pásame con alguien, por favor") que no cuentan una consulta. */
+const REQUEST_STEM = /^(transfier|transfer|pasa|pase|pasen|comunic|comuniqu|remit|conect|habl|contact|atiend|atend|quier|necesit|quisier|dese|requier|gustar|pued|podr|favor|porfa|ayud|alguien|persona|human|real|operador|representante|ejecutiv|agente|hola|buen|gracias)/;
+const REQUEST_FILLER = new Set(['me', 'mi', 'te', 'se', 'le', 'con', 'un', 'una', 'uno', 'el', 'la', 'lo', 'de', 'del', 'por', 'a', 'al', 'que', 'para', 'ya', 'ahora', 'pronto', 'rapido', 'otro', 'otra', 'es', 'si', 'pues', 'y', 'o', 'en', 'esto', 'eso', 'mas']);
+/** "asesosr", "aseosr": un error de escritura de "asesor" también es un pedido de asesor. */
+const isAdvisorWord = (w: string) => w.length >= 5 && (editDistance(w, 'asesor') <= 2 || editDistance(w, 'asesora') <= 2 || editDistance(w, 'asesores') <= 2);
+/** Todo el mensaje es el pedido del asesor (y nada más): no hay consulta que llevar al WhatsApp. */
+const isAdvisorRequestOnly = (subject: string) => {
+  const words = normalize(subject).split(' ').filter(Boolean);
+  return words.length > 0 && words.every((w) => REQUEST_FILLER.has(w) || REQUEST_STEM.test(w) || isAdvisorWord(w));
+};
 /** "Tengo una deuda atrasada y quiero hablar con un asesor" → "Tengo una deuda atrasada": el pedido del asesor no es la consulta. */
-const withoutAdvisorRequest = (subject: string) => subject
+const withoutAdvisorRequest = (subject: string) => (isAdvisorRequestOnly(subject) ? '' : subject)
   .replace(/\s*(?:[,;]|\by\b|\bpero\b)?\s*(?:quiero|necesito|quisiera|deseo|requiero|me gustar[ií]a)\s+(?:hablar|comunicarme|que me (?:pasen|comuniquen|atiendan?)|un asesor|una asesora|pasar|contactar)[^.?!]*$/iu, '')
   .replace(/[\s,;]+$/, '').trim();
 const NO_ADVISOR_WA = 'En este momento no hay un asesor disponible por WhatsApp. Inténtalo de nuevo más tarde o consulta los canales de atención del sitio.';
@@ -321,7 +331,7 @@ async function turn(deps: LiveBotDeps, company: Company, session: PublicSession,
   const collecting = bot.handoffAsks > 0;
   const analysis = analyze(body.message);
   const { greeted, howAreYou, rest } = analysis;
-  const n = normalize(body.message);
+  const n = fixAdvisorTypos(normalize(body.message));
   // "¿Me puedes pasar con uno?" justo después de que el bot nombró a un asesor: lo pide.
   const refersAdvisor = analysis.intent === 'other' && NAMES_ADVISOR.test(bot.lastText ?? '')
     && /\b(pasar|pasarme|pasas|pasame|comunicar|comunicarme|comunicas|hablar|conectar|conectarme|conectas) con (uno|una|el|ella)\b/.test(n);

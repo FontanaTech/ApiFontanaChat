@@ -1,4 +1,4 @@
-import { normalize } from '../utils/text';
+import { editDistance, normalize } from '../utils/text';
 
 /**
  * ÚNICA fuente de las reglas de intención del chat (chat clásico y chat en vivo usan las mismas).
@@ -209,8 +209,20 @@ export const isSensitive = (n: string): boolean => {
 
 /* ---------- clasificación ---------- */
 
+/**
+ * "asesosr", "aseosr", "asezor": una palabra mal escrita que se parece a "asesor" se lee como tal (ya normalizada). No toca
+ * las palabras reales de la familia ("asesoría", "asesorar", "asesoramiento").
+ */
+export function fixAdvisorTypos(n: string): string {
+  return n.replace(/\b[a-zñ]{5,9}\b/g, (w) => {
+    if (/^(asesor|asesora|asesores|asesoras)$/.test(w) || /^asesor(i|ar|am|ad)/.test(w)) return w;
+    const best = ['asesor', 'asesora', 'asesores', 'asesoras'].find((x) => w[0] === x[0] && editDistance(w, x) <= (x.length >= 7 ? 2 : 1));
+    return best ?? w;
+  });
+}
+
 export function analyze(message: string): Analysis {
-  const n = normalize(withoutQuestionTag(message));
+  const n = fixAdvisorTypos(normalize(withoutQuestionTag(message)));
   // Sin letras ni números: "👍" es un acuse; "?" o "??" es que no entendió o espera respuesta.
   if (!n) return { intent: /[?¿]/.test(message) ? 'help' : 'thanks', greeted: false, rest: '' };
   const { rest, greeted, acked, helped, called, howAreYou } = leads(n);
